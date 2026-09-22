@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Copilot CLI Webchat @ raspberrypi</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside id="sidebar" class="sidebar">
+      <button id="newChatBtn" class="new-chat-btn">＋ Nuova chat</button>
+      <div id="chatList" class="chat-list"></div>
+      <button id="logoutBtn" class="logout-btn">Esci</button>
+    </aside>
+
+    <div class="main">
+      <header>
+        <button id="menuBtn" class="menu-btn">☰</button>
+        <h1>🤖 Copilot CLI Webchat @ raspberrypi</h1>
+      </header>
+
+      <main id="messages" class="messages"></main>
+
+      <form id="chatForm" class="input-bar">
+        <textarea id="input" placeholder="Scrivi un messaggio..." rows="1" autofocus></textarea>
+        <button type="submit" id="sendBtn">Invia</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
