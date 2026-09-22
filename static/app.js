@@ -12,6 +12,7 @@ const modelSelect = document.getElementById("modelSelect");
 const permissionInputs = document.querySelectorAll("[data-permission]");
 
 let currentChatId = null;
+const chatPermissions = new Map();
 const mobileLayout = window.matchMedia("(max-width: 700px)");
 
 function syncSidebarWithViewport() {
@@ -37,12 +38,23 @@ function selectedPermissions() {
 }
 
 permissionInputs.forEach((input) => {
-  input.addEventListener("change", () => {
+  input.addEventListener("change", async () => {
     permissionInputs.forEach((otherInput) => {
-      if (otherInput.dataset.permission === input.dataset.permission) {
-        otherInput.checked = input.checked;
+      if (input.dataset.permission === "all") {
+        if (otherInput !== input) otherInput.checked = false;
+      } else if (otherInput.dataset.permission === "all") {
+        otherInput.checked = false;
       }
     });
+    const permissions = selectedPermissions();
+    if (currentChatId) {
+      chatPermissions.set(currentChatId, permissions);
+      await fetch(`/api/chats/${currentChatId}/permissions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permissions }),
+      });
+    }
   });
 });
 
@@ -155,6 +167,7 @@ async function loadChatList() {
   const chats = await res.json();
   chatListEl.innerHTML = "";
   for (const c of chats) {
+    chatPermissions.set(c.id, c.permissions || []);
     const item = document.createElement("div");
     item.className = "chat-item" + (c.id === currentChatId ? " active" : "");
     const title = document.createElement("span");
@@ -192,6 +205,9 @@ async function openChat(chatId) {
   if (!res.ok) return;
   const msgs = await res.json();
   currentChatId = chatId;
+  permissionInputs.forEach((input) => {
+    input.checked = (chatPermissions.get(chatId) || []).includes(input.dataset.permission);
+  });
   messagesEl.innerHTML = "";
   for (const m of msgs) {
     addMessage(m.content, m.role === "user" ? "user" : "bot", m.model);
@@ -233,6 +249,7 @@ form.addEventListener("submit", async (e) => {
     } else {
       addMessage(data.reply, "bot", data.model);
       currentChatId = data.chat_id;
+      chatPermissions.set(currentChatId, selectedPermissions());
       loadChatList();
     }
   } catch (err) {
@@ -254,6 +271,9 @@ input.addEventListener("keydown", (e) => {
 newChatBtn.addEventListener("click", async () => {
   await fetch("/api/new-chat", { method: "POST" });
   currentChatId = null;
+  permissionInputs.forEach((input) => {
+    input.checked = false;
+  });
   messagesEl.innerHTML = "";
   sidebar.classList.add("hidden");
   loadChatList();

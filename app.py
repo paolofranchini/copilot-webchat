@@ -36,6 +36,7 @@ TIMEOUT_SECONDS = 300
 PERMISSION_FLAGS = {
     "shell": "--allow-tool=shell",
     "write": "--allow-tool=write",
+    "all": "--allow-all",
 }
 
 
@@ -54,13 +55,29 @@ def close_db(_exc):
         db.close()
 
 
+def valid_permissions(permissions):
+    if (
+        not isinstance(permissions, list)
+        or any(
+            not isinstance(permission, str) or permission not in PERMISSION_FLAGS
+            for permission in permissions
+        )
+        or len(set(permissions)) != len(permissions)
+    ):
+        return None
+    if "all" in permissions:
+        return ["all"]
+    return permissions
+
+
 def init_db():
     with sqlite3.connect(DB_PATH) as db:
         db.execute(
             """CREATE TABLE IF NOT EXISTS chats (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                permissions TEXT NOT NULL DEFAULT '[]'
             )"""
         )
         db.execute(
@@ -77,6 +94,11 @@ def init_db():
         cols = [r[1] for r in db.execute("PRAGMA table_info(messages)").fetchall()]
         if "model" not in cols:
             db.execute("ALTER TABLE messages ADD COLUMN model TEXT")
+        chat_cols = [r[1] for r in db.execute("PRAGMA table_info(chats)").fetchall()]
+        if "permissions" not in chat_cols:
+            db.execute(
+                "ALTER TABLE chats ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'"
+            )
 
 
 init_db()
@@ -170,9 +192,15 @@ def logout():
 def list_chats():
     db = get_db()
     rows = db.execute(
-        "SELECT id, title, created_at FROM chats ORDER BY created_at DESC LIMIT 50"
+        "SELECT id, title, created_at, permissions FROM chats "
+        "ORDER BY created_at DESC LIMIT 50"
     ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    chats = []
+    for row in rows:
+        chat = dict(row)
+        chat["permissions"] = json.loads(chat["permissions"])
+        chats.append(chat)
+    return jsonify(chats)
 
 
 @app.route("/api/chats/<chat_id>", methods=["GET"])
@@ -184,6 +212,23 @@ def get_chat(chat_id):
     ).fetchall()
     session["copilot_session_id"] = chat_id
     return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/chats/<chat_id>/permissions", methods=["PUT"])
+def update_chat_permissions(chat_id):
+    data = request.get_json(force=True) or {}
+    permissions = valid_permissions(data.get("permissions", []))
+    if permissions is None:
+        return jsonify({"error": "autorizzazioni non valide"}), 400
+    db = get_db()
+    result = db.execute(
+        "UPDATE chats SET permissions = ? WHERE id = ?",
+        (json.dumps(permissions), chat_id),
+    )
+    if result.rowcount == 0:
+        return jsonify({"error": "chat non trovata"}), 404
+    db.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/chats/<chat_id>", methods=["DELETE"])
@@ -206,15 +251,8 @@ def chat():
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "messaggio vuoto"}), 400
-    permissions = data.get("permissions", [])
-    if (
-        not isinstance(permissions, list)
-        or any(
-            not isinstance(permission, str) or permission not in PERMISSION_FLAGS
-            for permission in permissions
-        )
-        or len(set(permissions)) != len(permissions)
-    ):
+    permissions = valid_permissions(data.get("permissions", []))
+    if permissions is None:
         return jsonify({"error": "autorizzazioni non valide"}), 400
     model = (data.get("model") or "auto").strip()
     if not model:
@@ -232,8 +270,13 @@ def chat():
     # un reset del db), la chat viene ricreata invece di restare orfana.
     title = message[:60]
     db.execute(
-        "INSERT OR IGNORE INTO chats (id, title, created_at) VALUES (?, ?, ?)",
-        (copilot_session_id, title, now),
+        "INSERT OR IGNORE INTO chats (id, title, created_at, permissions) "
+        "VALUES (?, ?, ?, ?)",
+        (copilot_session_id, title, now, json.dumps(permissions)),
+    )
+    db.execute(
+        "UPDATE chats SET permissions = ? WHERE id = ?",
+        (json.dumps(permissions), copilot_session_id),
     )
     db.execute(
         "INSERT INTO messages (chat_id, role, content, ts) VALUES (?, 'user', ?, ?)",
