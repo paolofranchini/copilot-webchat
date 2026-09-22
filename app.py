@@ -38,6 +38,10 @@ PERMISSION_FLAGS = {
     "write": "--allow-tool=write",
     "all": "--allow-all",
 }
+DENY_PERMISSION_FLAGS = {
+    "shell": "--deny-tool=shell",
+    "write": "--deny-tool=write",
+}
 
 
 def get_db():
@@ -134,8 +138,13 @@ def run_copilot(
         args += ["--model", model]
     else:
         args += ["--resume", copilot_session_id]
-    for permission in permissions or []:
+    permissions = permissions or []
+    for permission in permissions:
         args.append(PERMISSION_FLAGS[permission])
+    if "all" not in permissions:
+        for permission, flag in DENY_PERMISSION_FLAGS.items():
+            if permission not in permissions:
+                args.append(flag)
     args += ["-p", prompt, "--output-format", "json"]
 
     result = subprocess.run(

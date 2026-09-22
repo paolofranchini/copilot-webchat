@@ -12,7 +12,7 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 - **Gestione chat**: ogni conversazione può essere eliminata dalla sidebar.
 - **Continuità di contesto**: ogni conversazione richiama `copilot --resume` sullo stesso `session-id`, così Copilot ricorda lo storico dei messaggi precedenti.
 - **Modello scelto all'inizio**: il modello si seleziona dalla sidebar; le richieste successive riprendono la sessione senza forzare un nuovo modello, mostrato come etichetta sotto ogni risposta.
-- **Autorizzazioni chat**: nella sidebar puoi autorizzare separatamente l'esecuzione di comandi e la modifica di file per tutta la chat, oppure usare "Consenti tutto" (`--allow-all`); di default non è autorizzato nulla.
+- **Autorizzazioni chat**: nella sidebar puoi autorizzare separatamente l'esecuzione di comandi e la modifica di file per tutta la chat, oppure usare "Consenti tutto" (`--allow-all`); gli strumenti non selezionati vengono negati esplicitamente.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
 
 ## Requisiti
@@ -110,6 +110,6 @@ sudo systemctl enable --now copilot-webchat.service
 
 ## Sicurezza
 
-- Per ogni chat puoi concedere separatamente `--allow-tool=shell` (comandi) e `--allow-tool=write` (modifica file), oppure `--allow-all` (tutte le autorizzazioni). Se non selezioni nulla, Copilot non riceve autorizzazioni automatiche.
+- Per ogni chat puoi concedere separatamente `--allow-tool=shell` (comandi) e `--allow-tool=write` (modifica file), oppure `--allow-all` (tutte le autorizzazioni). Gli strumenti non selezionati ricevono rispettivamente `--deny-tool=shell` e `--deny-tool=write`; se non selezioni nulla, entrambi sono negati. L'autorizzazione `shell` resta potente: i comandi eseguiti possono modificare file anche quando lo strumento `write` è negato.
 - **Non esporre questo servizio su internet pubblico** senza aggiungere ulteriori misure di sicurezza (reverse proxy con TLS, rate limiting, ecc.). È pensato per essere raggiunto solo tramite una rete privata come Tailscale.
 - La password è salvata solo come hash (`scrypt`), mai in chiaro.
