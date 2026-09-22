@@ -33,6 +33,10 @@ PASSWORD_HASH = AUTH_FILE.read_text().strip() if AUTH_FILE.exists() else None
 DB_PATH = CONFIG_DIR / "webchat.db"
 COPILOT_BIN = "/home/linuxbrew/.linuxbrew/bin/copilot"
 TIMEOUT_SECONDS = 300
+PERMISSION_FLAGS = {
+    "shell": "--allow-tool=shell",
+    "write": "--allow-tool=write",
+}
 
 
 def get_db():
@@ -90,14 +94,27 @@ def require_login():
     return app.send_static_file("login.html")
 
 
-def run_copilot(prompt: str, copilot_session_id: str, is_new: bool) -> tuple[str, str | None]:
-    """Invoca copilot in modo non interattivo (modello auto) e restituisce (risposta, modello_usato)."""
+def run_copilot(
+    prompt: str,
+    copilot_session_id: str,
+    is_new: bool,
+    model: str = "auto",
+    permissions: list[str] | None = None,
+) -> tuple[str, str | None]:
+    """Invoca copilot e restituisce (risposta, modello_usato).
+
+    La prima richiesta lascia scegliere il modello a Copilot; le richieste
+    successive riprendono la sessione senza sovrascrivere il modello scelto.
+    """
     args = [COPILOT_BIN]
     if is_new:
         args += ["--session-id", copilot_session_id]
+        args += ["--model", model]
     else:
         args += ["--resume", copilot_session_id]
-    args += ["-p", prompt, "--allow-all-tools", "--model", "auto", "--output-format", "json"]
+    for permission in permissions or []:
+        args.append(PERMISSION_FLAGS[permission])
+    args += ["-p", prompt, "--output-format", "json"]
 
     result = subprocess.run(
         args,
@@ -169,12 +186,39 @@ def get_chat(chat_id):
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/chats/<chat_id>", methods=["DELETE"])
+def delete_chat(chat_id):
+    db = get_db()
+    row = db.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone()
+    if row is None:
+        return jsonify({"error": "chat non trovata"}), 404
+    db.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+    db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    db.commit()
+    if session.get("copilot_session_id") == chat_id:
+        session.pop("copilot_session_id", None)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json(force=True) or {}
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "messaggio vuoto"}), 400
+    permissions = data.get("permissions", [])
+    if (
+        not isinstance(permissions, list)
+        or any(
+            not isinstance(permission, str) or permission not in PERMISSION_FLAGS
+            for permission in permissions
+        )
+        or len(set(permissions)) != len(permissions)
+    ):
+        return jsonify({"error": "autorizzazioni non valide"}), 400
+    model = (data.get("model") or "auto").strip()
+    if not model:
+        model = "auto"
 
     is_new = "copilot_session_id" not in session
     if is_new:
@@ -198,7 +242,9 @@ def chat():
     db.commit()
 
     try:
-        reply, model = run_copilot(message, copilot_session_id, is_new)
+        reply, used_model = run_copilot(
+            message, copilot_session_id, is_new, model, permissions
+        )
     except subprocess.TimeoutExpired:
         return jsonify({"error": "timeout: risposta troppo lenta"}), 504
     except RuntimeError as exc:
@@ -206,11 +252,11 @@ def chat():
 
     db.execute(
         "INSERT INTO messages (chat_id, role, content, model, ts) VALUES (?, 'bot', ?, ?, ?)",
-        (copilot_session_id, reply, model, datetime.now(timezone.utc).isoformat()),
+        (copilot_session_id, reply, used_model, datetime.now(timezone.utc).isoformat()),
     )
     db.commit()
 
-    return jsonify({"reply": reply, "chat_id": copilot_session_id, "model": model})
+    return jsonify({"reply": reply, "chat_id": copilot_session_id, "model": used_model})
 
 
 @app.route("/api/new-chat", methods=["POST"])

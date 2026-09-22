@@ -9,8 +9,10 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 - **Interfaccia chat** semplice, scura, responsive (sidebar collassabile su mobile).
 - **Login con sola password** (nessun nome utente), hash salvato con `scrypt`.
 - **Cronologia conversazioni** persistente su SQLite: ogni chat è riprendibile in qualsiasi momento.
+- **Gestione chat**: ogni conversazione può essere eliminata dalla sidebar.
 - **Continuità di contesto**: ogni conversazione richiama `copilot --resume` sullo stesso `session-id`, così Copilot ricorda lo storico dei messaggi precedenti.
-- **Modello sempre in modalità `auto`**: Copilot sceglie il modello migliore per ogni richiesta, mostrato come etichetta sotto ogni risposta.
+- **Modello scelto all'inizio**: il modello si seleziona dalla sidebar; le richieste successive riprendono la sessione senza forzare un nuovo modello, mostrato come etichetta sotto ogni risposta.
+- **Autorizzazioni per richiesta**: nella sidebar puoi autorizzare separatamente l'esecuzione di comandi e la modifica di file; di default non è autorizzato nulla.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
 
 ## Requisiti
@@ -103,11 +105,11 @@ sudo systemctl enable --now copilot-webchat.service
 
 1. Apri `http://<ip-tailscale-o-locale>:7890` da un dispositivo connesso alla tua rete privata.
 2. Inserisci la password configurata.
-3. Scrivi un messaggio: verrà inoltrato a `copilot -p --model auto`, mantenendo il contesto della conversazione.
-4. Usa "＋ Nuova chat" per iniziare una conversazione pulita, o seleziona una chat precedente dalla sidebar per riprenderla.
+3. Seleziona il modello e le autorizzazioni dalla sidebar, poi scrivi un messaggio: la prima richiesta userà `copilot -p --model <modello>`; le successive useranno `--resume` senza sovrascrivere il modello.
+4. Usa "＋ Nuova chat" per iniziare una conversazione pulita, seleziona una chat precedente per riprenderla o usa il cestino per eliminarla.
 
 ## Sicurezza
 
-- Il servizio invoca Copilot con `--allow-all-tools`: l'agente può eseguire comandi ed effettuare modifiche ai file senza conferma interattiva, esattamente come da CLI ma senza il "muro" di conferma manuale.
+- Il servizio non usa `--allow-all` o `--allow-all-tools`: per ogni richiesta puoi concedere separatamente `--allow-tool=shell` (comandi) e `--allow-tool=write` (modifica file). Se non selezioni nulla, Copilot non riceve autorizzazioni automatiche; le selezioni non vengono conservate per le richieste successive.
 - **Non esporre questo servizio su internet pubblico** senza aggiungere ulteriori misure di sicurezza (reverse proxy con TLS, rate limiting, ecc.). È pensato per essere raggiunto solo tramite una rete privata come Tailscale.
 - La password è salvata solo come hash (`scrypt`), mai in chiaro.
