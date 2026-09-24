@@ -9,10 +9,12 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 - **Interfaccia chat** semplice, scura, responsive (sidebar collassabile su mobile).
 - **Login con sola password** (nessun nome utente), hash salvato con `scrypt`.
 - **Cronologia conversazioni** persistente su SQLite: ogni chat è riprendibile in qualsiasi momento.
-- **Gestione chat**: ogni conversazione può essere eliminata dalla sidebar.
+- **Gestione chat**: ogni conversazione può essere rinominata o eliminata dalla sidebar.
 - **Continuità di contesto**: ogni conversazione richiama `copilot --resume` sullo stesso `session-id`, così Copilot ricorda lo storico dei messaggi precedenti.
-- **Modello scelto all'inizio**: il modello si seleziona dalla sidebar; le richieste successive riprendono la sessione senza forzare un nuovo modello, mostrato come etichetta sotto ogni risposta.
+- **Modello fissato per chat**: il modello si seleziona dalla sidebar e resta invariato per tutta la conversazione, anche quando si usa `auto`; viene mostrato come etichetta sotto ogni risposta.
+- **Crediti per chat**: la webchat salva le statistiche cumulative restituite dalla CLI e mostra i crediti AI (o le richieste premium sui piani legacy) nella sidebar e nella chat aperta.
 - **Autorizzazioni chat**: nella sidebar puoi autorizzare separatamente l'esecuzione di comandi e la modifica di file per tutta la chat, oppure usare "Consenti tutto" (`--allow-all`); gli strumenti non selezionati vengono negati esplicitamente.
+- **Immagini allegate**: il pulsante `+` apre un'area per selezionare o trascinare immagini PNG, JPEG, GIF o WebP (fino a 5 immagini da 10 MB per messaggio), inviate a Copilot come allegati.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
 
 ## Requisiti
@@ -105,8 +107,9 @@ sudo systemctl enable --now copilot-webchat.service
 
 1. Apri `http://<ip-tailscale-o-locale>:7890` da un dispositivo connesso alla tua rete privata.
 2. Inserisci la password configurata.
-3. Seleziona il modello e le autorizzazioni dalla sidebar, poi scrivi un messaggio: la prima richiesta userà `copilot -p --model <modello>`; le successive useranno `--resume` senza sovrascrivere il modello. Le autorizzazioni restano associate alla chat. "Consenti tutto" equivale a `--allow-all` (anche noto come modalità `/yolo`).
-4. Usa "＋ Nuova chat" per iniziare una conversazione pulita, seleziona una chat precedente per riprenderla o usa il cestino per eliminarla.
+3. Seleziona il modello e le autorizzazioni dalla sidebar, poi scrivi un messaggio: il modello scelto viene fissato per tutta la chat e passato a ogni richiesta, incluse quelle con `--resume`. Con `Auto`, la prima risposta determina il modello che verrà mantenuto nei turni successivi. Le autorizzazioni restano associate alla chat. "Consenti tutto" equivale a `--allow-all` (anche noto come modalità `/yolo`). Usa il pulsante `+` vicino al campo di testo per allegare immagini.
+4. Usa "＋ Nuova chat" per iniziare una conversazione pulita, seleziona una chat precedente per riprenderla, l'icona matita per rinominarla o il cestino per eliminarla.
+5. L'utilizzo crediti viene aggiornato dopo ogni esecuzione della CLI; le chat senza statistiche disponibili mostrano "Utilizzo crediti non disponibile".
 
 ## Sicurezza
 

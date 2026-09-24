@@ -9,10 +9,18 @@ const sidebar = document.getElementById("sidebar");
 const menuBtn = document.getElementById("menuBtn");
 const closeSidebarBtn = document.getElementById("closeSidebarBtn");
 const modelSelect = document.getElementById("modelSelect");
+const chatUsageEl = document.getElementById("chatUsage");
 const permissionInputs = document.querySelectorAll("[data-permission]");
+const attachmentBtn = document.getElementById("attachmentBtn");
+const attachmentPicker = document.getElementById("attachmentPicker");
+const attachmentInput = document.getElementById("attachmentInput");
+const attachmentDropzone = document.getElementById("attachmentDropzone");
+const attachmentPreviews = document.getElementById("attachmentPreviews");
 
 let currentChatId = null;
+let attachedImages = [];
 const chatPermissions = new Map();
+const chatUsages = new Map();
 const mobileLayout = window.matchMedia("(max-width: 700px)");
 
 function syncSidebarWithViewport() {
@@ -26,7 +34,9 @@ function syncSidebarWithViewport() {
 syncSidebarWithViewport();
 mobileLayout.addEventListener("change", syncSidebarWithViewport);
 
-modelSelect.value = localStorage.getItem("copilot-model") || "auto";
+const savedModel = localStorage.getItem("copilot-model");
+modelSelect.value = savedModel || "auto";
+localStorage.setItem("copilot-model", modelSelect.value);
 modelSelect.addEventListener("change", () => {
   localStorage.setItem("copilot-model", modelSelect.value);
 });
@@ -155,11 +165,82 @@ function addMessage(text, cls, model) {
   return el;
 }
 
+function formatChatUsage(usage) {
+  if (!usage) return null;
+  const numberFormat = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 9 });
+  if (Number.isFinite(usage.ai_credits)) {
+    return `${numberFormat.format(usage.ai_credits)} crediti AI`;
+  }
+  if (Number.isFinite(usage.premium_requests)) {
+    return `${numberFormat.format(usage.premium_requests)} richieste premium`;
+  }
+  return null;
+}
+
+function renderChatUsage() {
+  if (!currentChatId) {
+    chatUsageEl.textContent = "";
+    return;
+  }
+  const usage = formatChatUsage(chatUsages.get(currentChatId));
+  chatUsageEl.textContent = usage
+    ? `Utilizzo chat: ${usage}`
+    : "Utilizzo crediti non disponibile";
+}
+
 function autoResize() {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 140) + "px";
 }
 input.addEventListener("input", autoResize);
+
+function renderAttachmentPreviews() {
+  attachmentPreviews.innerHTML = "";
+  attachedImages.forEach((file, index) => {
+    const preview = document.createElement("div");
+    preview.className = "attachment-preview";
+    const image = document.createElement("img");
+    image.src = URL.createObjectURL(file);
+    image.alt = file.name;
+    image.onload = () => URL.revokeObjectURL(image.src);
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.setAttribute("aria-label", `Rimuovi ${file.name}`);
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", () => {
+      attachedImages.splice(index, 1);
+      renderAttachmentPreviews();
+    });
+    preview.append(image, removeBtn);
+    attachmentPreviews.appendChild(preview);
+  });
+}
+
+function addAttachments(files) {
+  const images = [...files].filter((file) => file.type.startsWith("image/"));
+  attachedImages = [...attachedImages, ...images].slice(0, 5);
+  attachmentInput.value = "";
+  renderAttachmentPreviews();
+}
+
+attachmentBtn.addEventListener("click", () => {
+  attachmentPicker.hidden = !attachmentPicker.hidden;
+  attachmentBtn.setAttribute("aria-expanded", String(!attachmentPicker.hidden));
+});
+
+attachmentInput.addEventListener("change", () => addAttachments(attachmentInput.files));
+attachmentDropzone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  attachmentDropzone.classList.add("dragging");
+});
+attachmentDropzone.addEventListener("dragleave", () => {
+  attachmentDropzone.classList.remove("dragging");
+});
+attachmentDropzone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  attachmentDropzone.classList.remove("dragging");
+  addAttachments(event.dataTransfer.files);
+});
 
 async function loadChatList() {
   const res = await fetch("/api/chats");
@@ -168,25 +249,63 @@ async function loadChatList() {
   chatListEl.innerHTML = "";
   for (const c of chats) {
     chatPermissions.set(c.id, c.permissions || []);
+    chatUsages.set(c.id, c.usage);
     const item = document.createElement("div");
     item.className = "chat-item" + (c.id === currentChatId ? " active" : "");
+    const titleWrap = document.createElement("span");
+    titleWrap.className = "chat-title-wrap";
     const title = document.createElement("span");
     title.className = "chat-title";
     title.textContent = c.title || "(senza titolo)";
+    titleWrap.appendChild(title);
+    const usage = formatChatUsage(c.usage);
+    if (usage) {
+      const usageLabel = document.createElement("span");
+      usageLabel.className = "chat-usage";
+      usageLabel.textContent = usage;
+      titleWrap.appendChild(usageLabel);
+    }
     const deleteBtn = document.createElement("button");
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "rename-chat-btn";
+    renameBtn.type = "button";
+    renameBtn.title = "Rinomina chat";
+    renameBtn.setAttribute("aria-label", `Rinomina chat ${c.title || ""}`);
+    renameBtn.textContent = "✎";
+    renameBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      renameChat(c.id, c.title || "");
+    });
     deleteBtn.className = "delete-chat-btn";
     deleteBtn.type = "button";
     deleteBtn.title = "Elimina chat";
     deleteBtn.setAttribute("aria-label", `Elimina chat ${c.title || ""}`);
-    deleteBtn.textContent = "🗑";
+    deleteBtn.textContent = "×";
     deleteBtn.addEventListener("click", (event) => {
       event.stopPropagation();
       deleteChat(c.id);
     });
-    item.append(title, deleteBtn);
+    item.append(titleWrap, renameBtn, deleteBtn);
     item.addEventListener("click", () => openChat(c.id));
     chatListEl.appendChild(item);
   }
+}
+
+async function renameChat(chatId, currentTitle) {
+  const title = window.prompt("Nuovo titolo della chat:", currentTitle);
+  if (title === null) return;
+
+  const res = await fetch(`/api/chats/${chatId}/title`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    window.alert(data.error || "Impossibile rinominare la chat");
+    return;
+  }
+  loadChatList();
 }
 
 async function deleteChat(chatId) {
@@ -196,7 +315,9 @@ async function deleteChat(chatId) {
   if (currentChatId === chatId) {
     currentChatId = null;
     messagesEl.innerHTML = "";
+    renderChatUsage();
   }
+  chatUsages.delete(chatId);
   loadChatList();
 }
 
@@ -205,6 +326,7 @@ async function openChat(chatId) {
   if (!res.ok) return;
   const msgs = await res.json();
   currentChatId = chatId;
+  renderChatUsage();
   permissionInputs.forEach((input) => {
     input.checked = (chatPermissions.get(chatId) || []).includes(input.dataset.permission);
   });
@@ -219,24 +341,25 @@ async function openChat(chatId) {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && attachedImages.length === 0) return;
 
-  addMessage(text, "user");
+  addMessage(text || `[Allegate ${attachedImages.length} immagini]`, "user");
   input.value = "";
   autoResize();
   sendBtn.disabled = true;
+  attachmentBtn.disabled = true;
 
   const pending = addMessage("Copilot sta pensando...", "bot pending");
 
   try {
+    const formData = new FormData();
+    formData.append("message", text);
+    formData.append("model", modelSelect.value);
+    formData.append("permissions", JSON.stringify(selectedPermissions()));
+    attachedImages.forEach((file) => formData.append("images", file));
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: text,
-        model: modelSelect.value,
-        permissions: selectedPermissions(),
-      }),
+      body: formData,
     });
     const data = await res.json();
     pending.remove();
@@ -244,19 +367,26 @@ form.addEventListener("submit", async (e) => {
       window.location.href = "/login.html";
       return;
     }
+    if (data.chat_id) {
+      currentChatId = data.chat_id;
+      chatUsages.set(currentChatId, data.usage);
+      renderChatUsage();
+      loadChatList();
+    }
     if (!res.ok) {
       addMessage(data.error || "Errore sconosciuto", "error");
     } else {
       addMessage(data.reply, "bot", data.model);
-      currentChatId = data.chat_id;
       chatPermissions.set(currentChatId, selectedPermissions());
-      loadChatList();
     }
   } catch (err) {
     pending.remove();
     addMessage("Errore di rete: " + err.message, "error");
   } finally {
     sendBtn.disabled = false;
+    attachmentBtn.disabled = false;
+    attachedImages = [];
+    renderAttachmentPreviews();
     input.focus();
   }
 });
@@ -271,6 +401,7 @@ input.addEventListener("keydown", (e) => {
 newChatBtn.addEventListener("click", async () => {
   await fetch("/api/new-chat", { method: "POST" });
   currentChatId = null;
+  renderChatUsage();
   permissionInputs.forEach((input) => {
     input.checked = false;
   });
