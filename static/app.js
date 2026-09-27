@@ -944,7 +944,17 @@ async function submitChat(e, fleet = false) {
   const submissionTools = selectedTools();
   const isCommand = advanced && attachedFiles.length === 0
     && (/^\/(help|usage)\s*$/i.test(text) || /^\/model\s+\S+\s*$/i.test(text));
-  const userMessage = addMessage(text || `[Allegati ${attachedFiles.length} file]`, "user", null, new Date().toISOString());
+  addMessage(text || `[Allegati ${attachedFiles.length} file]`, "user", null, new Date().toISOString());
+  // Il messaggio viene svuotato subito: a questo punto il testo è già stato
+  // "consumato" per la richiesta e, lato server, viene salvato nella cronologia
+  // prima ancora di invocare Copilot, quindi non deve restare bloccato nella
+  // textbox anche se la richiesta fallisce o lo streaming si interrompe
+  // (es. tab in background/schermo bloccato su mobile).
+  input.value = "";
+  autoResize();
+  const submittedFiles = attachedFiles;
+  attachedFiles = [];
+  renderAttachmentPreviews();
   const activity = document.createElement("div");
   activity.className = "activity-log";
   if (advanced && !isCommand) messagesEl.append(activity);
@@ -968,7 +978,7 @@ async function submitChat(e, fleet = false) {
       if (planToggle.checked) formData.append("plan", "true");
       if (fleet) formData.append("fleet", "true");
     }
-    attachedFiles.forEach((file) => formData.append("files", file));
+    submittedFiles.forEach((file) => formData.append("files", file));
     let data;
     if (advanced) data = await streamChat(formData, pending, activity);
     if (!data) {
@@ -1005,15 +1015,16 @@ async function submitChat(e, fleet = false) {
     showNotice("");
   } catch (err) {
     pending?.remove();
+    // Il messaggio dell'utente resta visibile anche in caso di errore: viene
+    // salvato lato server prima di invocare Copilot, quindi rimuoverlo dalla UI
+    // sarebbe fuorviante (l'invio è comunque avvenuto).
     if (err.chat_id) {
       currentChatId = err.chat_id;
       syncToolControls();
       if (err.usage) chatUsages.set(currentChatId, err.usage);
       renderChatUsage();
-      loadChatList();
-    } else {
-      userMessage.remove();
     }
+    loadChatList();
     const errorMessage = addMessage(`Errore: ${err.message}`, "error");
     if (err.chat_id) {
       const reloadBtn = document.createElement("button");
@@ -1028,13 +1039,7 @@ async function submitChat(e, fleet = false) {
     }
   } finally {
     activity.remove();
-    if (success) {
-      input.value = "";
-      autoResize();
-      attachedFiles = [];
-      renderAttachmentPreviews();
-      if (pendingPlan) planToggle.checked = false;
-    }
+    if (success && pendingPlan) planToggle.checked = false;
     busy = false;
     syncToolControls();
     renderMcpServers();
