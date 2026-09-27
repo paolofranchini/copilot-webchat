@@ -47,6 +47,14 @@ Auth requires `~/.copilot/webchat_auth` to contain a `werkzeug` password hash
   only through `fetch()` against the `/api/*` JSON endpoints; a `401` on
   `/api/chat` redirects the browser to `/login.html`.
 
+## Git workflow
+
+- Never run `git commit` or `git push` in this repository unless the user
+  explicitly asks for it in that turn (e.g. "fai commit e push"). Making
+  code changes or fixing a bug is not by itself authorization to commit or
+  push — always leave changes uncommitted/unpushed and wait for an explicit
+  request.
+
 ## Conventions
 
 - Code comments and README are written in Italian; keep new comments/user
