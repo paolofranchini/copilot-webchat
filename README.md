@@ -14,8 +14,59 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 - **Modello fissato per chat**: il modello si seleziona dalla sidebar e resta invariato per tutta la conversazione, anche quando si usa `auto`; viene mostrato come etichetta sotto ogni risposta.
 - **Crediti per chat**: la webchat salva le statistiche cumulative restituite dalla CLI e mostra i crediti AI (o le richieste premium sui piani legacy) nella sidebar e nella chat aperta.
 - **Autorizzazioni chat**: nella sidebar puoi autorizzare separatamente l'esecuzione di comandi e la modifica di file per tutta la chat, oppure usare "Consenti tutto" (`--allow-all`); gli strumenti non selezionati vengono negati esplicitamente.
-- **Immagini allegate**: il pulsante `+` apre un'area per selezionare o trascinare immagini PNG, JPEG, GIF o WebP (fino a 5 immagini da 10 MB per messaggio), inviate a Copilot come allegati.
+- **File allegati**: il pulsante `+` apre un'area per selezionare o trascinare file (fino a 5 file da 10 MB ciascuno per messaggio). Immagini e documenti nativi vengono passati a Copilot come allegati; i file testuali comuni vengono inseriti direttamente nel prompt.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
+
+## Modalità avanzata (sperimentale)
+
+Premi **Impostazioni** sotto «Nuova chat» per aprire la schermata dedicata
+nell'area principale; scegli una chat dalla sidebar o premi «Nuova chat» per
+tornare ai messaggi. La schermata riunisce il modello e le autorizzazioni
+(disponibili anche nella sidebar), l'interruttore **Modalità avanzata**,
+le opzioni per la chat selezionata e la gestione dei server MCP e delle
+skill/plugin. Modello e autorizzazioni sono sincronizzati tra le due posizioni.
+La modalità avanzata è salvata nel `localStorage` del browser; di default
+è spenta e la chat normale continua a usare `POST /api/chat` senza nuovi
+flag. Anche il pulsante Fleet è nascosto di default: per mostrarlo, attiva
+l'opzione dedicata nelle funzioni avanzate delle impostazioni. La scelta vale
+per questo browser. Le impostazioni delle singole chat sono salvate nel database.
+
+- **Streaming**: la chat avanzata legge gli eventi JSONL della CLI durante l'esecuzione
+  tramite `POST /api/chat/stream` (SSE) e mostra l'attività dei tool. Se la CLI non
+  emette delta testuali, la risposta compare al termine; un'interruzione a metà
+  **non** ritenta automaticamente il prompt, per non eseguire due volte la richiesta.
+  Timeout e disconnessione terminano il processo.
+- **Piano**: `--plan` produce un piano senza autorizzare shell, scrittura o URL.
+  L'utente può approvarlo o annullarlo; l'approvazione riprende la stessa sessione
+  CLI con i permessi della chat. Finché il piano è in attesa, non è possibile inviare
+  altri messaggi in modalità avanzata.
+- **Fleet**: il pulsante dedicato usa `--fleet` della CLI per delegare il lavoro ai
+  subagent. Gli eventi di attività vengono mostrati nello stream; la CLI restituisce
+  un'unica risposta finale, non messaggi separati per ciascun subagent.
+- **Server MCP locali**: è possibile registrare un comando con percorso assoluto,
+  argomenti e variabili d'ambiente, abilitarlo globalmente e selezionarlo per chat.
+  Viene passato alla CLI con `--additional-mcp-config` tramite un file temporaneo
+  privato, cancellato alla fine. La configurazione (incluse le variabili) resta in
+  `~/.copilot/webchat.db`: non inserire segreti se altri utenti possono leggere il DB.
+  I server già configurati direttamente nella CLI restano soggetti alle sue impostazioni
+  globali; la selezione per chat riguarda solo i server creati nella webchat.
+- **Skill e plugin**: elenco in sola lettura tramite `copilot skill list --json` e
+  `copilot plugin list --json`. La CLI installata non offre un flag di selezione
+  delle skill per singola invocazione; non è possibile abilitarle per chat dalla UI.
+- **Comandi**: `/help`, `/usage`, `/model <modello>` sono gestiti dalla webchat, non
+  inviati arbitrariamente alla CLI. I permessi avanzati possono autorizzare pattern
+  puntuali come `shell(git status)` o `url(github.com)`, oltre ai permessi esistenti.
+  La CLI non espone un canale di approvazione bidirezionale affidabile in modalità
+  `-p`: le richieste di conferma per singola azione **non** sono disponibili.
+- **Allegati**: screenshot tramite condivisione schermo e dettatura tramite le API
+  del browser (se supportate). La dettatura compila il campo di testo, senza inviare
+  l'audio al backend. Queste API potrebbero richiedere **HTTPS** o `localhost`;
+  una pagina HTTP raggiunta tramite IP Tailscale potrebbe non poterle usare.
+
+Le opzioni sono state verificate con la CLI installata (versione 1.0.88);
+ricontrolla `copilot --help` dopo gli aggiornamenti per eventuali cambiamenti.
+Le autorizzazioni `shell` e gli strumenti MCP locali possono eseguire operazioni
+potenti: abilitali solo per configurazioni fidate.
 
 ## Requisiti
 
@@ -107,7 +158,7 @@ sudo systemctl enable --now copilot-webchat.service
 
 1. Apri `http://<ip-tailscale-o-locale>:7890` da un dispositivo connesso alla tua rete privata.
 2. Inserisci la password configurata.
-3. Seleziona il modello e le autorizzazioni dalla sidebar, poi scrivi un messaggio: il modello scelto viene fissato per tutta la chat e passato a ogni richiesta, incluse quelle con `--resume`. Con `Auto`, la prima risposta determina il modello che verrà mantenuto nei turni successivi. Le autorizzazioni restano associate alla chat. "Consenti tutto" equivale a `--allow-all` (anche noto come modalità `/yolo`). Usa il pulsante `+` vicino al campo di testo per allegare immagini.
+3. Seleziona il modello e le autorizzazioni dalla sidebar, poi scrivi un messaggio: il modello scelto viene fissato per tutta la chat e passato a ogni richiesta, incluse quelle con `--resume`. Con `Auto`, la prima risposta determina il modello che verrà mantenuto nei turni successivi. Le autorizzazioni restano associate alla chat. "Consenti tutto" equivale a `--allow-all` (anche noto come modalità `/yolo`). Usa il pulsante `+` vicino al campo di testo per allegare qualsiasi tipo di file.
 4. Usa "＋ Nuova chat" per iniziare una conversazione pulita, seleziona una chat precedente per riprenderla, l'icona matita per rinominarla o il cestino per eliminarla.
 5. L'utilizzo crediti viene aggiornato dopo ogni esecuzione della CLI; le chat senza statistiche disponibili mostrano "Utilizzo crediti non disponibile".
 

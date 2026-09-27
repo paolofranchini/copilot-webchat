@@ -36,7 +36,99 @@ html, body {
   padding: 10px;
   gap: 8px;
   transition: margin-left 0.2s ease;
+  overflow-y: auto;
 }
+[hidden] { display: none !important; }
+.settings-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+}
+.settings-view h2 {
+  max-width: 920px;
+  margin: 0 auto 20px;
+}
+.settings-view h2:focus { outline: none; }
+.settings-grid {
+  max-width: 920px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  align-items: start;
+  gap: 16px;
+}
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid #3a3f4f;
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 18px;
+  min-width: 0;
+}
+.settings-card h3 { margin: 0; font-size: 17px; }
+.settings-card p, .settings-card small {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+.advanced-switch {
+  color: var(--text);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.advanced-switch input { accent-color: var(--accent); }
+.settings-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-view textarea, .settings-view input:not([type="checkbox"]) {
+  width: 100%;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid #3a3f4f;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.settings-view textarea { resize: vertical; }
+.settings-view button, .advanced-attachments button, .plan-actions button, .slash-suggestions button {
+  border: 1px solid #3a3f4f;
+  border-radius: 6px;
+  padding: 5px 7px;
+  color: var(--text);
+  background: #303646;
+  cursor: pointer;
+}
+.settings-view button:disabled, .advanced-attachments button:disabled,
+.plan-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.sidebar-form { display: flex; flex-direction: column; gap: 6px; }
+.mcp-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 0; border-bottom: 1px solid #3a3f4f; }
+.mcp-row label { flex-basis: 100%; overflow-wrap: anywhere; }
+.permission-select small { color: var(--muted); }
+.chat-notice { padding: 6px 16px; background: #4a2323; color: #ffb4b4; font-size: 12px; }
+.activity-log { align-self: flex-start; max-width: 85%; font-size: 12px; color: var(--muted); }
+.tool-activity { margin: 3px 0; overflow-wrap: anywhere; }
+.plan-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.reload-chat-btn {
+  display: block;
+  margin-top: 8px;
+  padding: 5px 8px;
+  border: 1px solid #ffb4b4;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.advanced-attachments { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; font-size: 12px; }
+.slash-suggestions { display: flex; gap: 5px; flex-wrap: wrap; padding: 6px 16px; background: var(--panel); }
 .new-chat-btn, .logout-btn {
   background: transparent;
   border: 1px solid #3a3f4f;
@@ -47,6 +139,7 @@ html, body {
   font-size: 13px;
 }
 .new-chat-btn:hover, .logout-btn:hover { background: #262a36; }
+.new-chat-btn.active { background: #232634; border-color: var(--accent); }
 
 .close-sidebar-btn {
   display: none;
@@ -54,6 +147,7 @@ html, body {
 
 .chat-list {
   flex: 1;
+  min-height: 100px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -160,6 +254,12 @@ html, body {
   flex-direction: column;
   min-width: 0;
 }
+.chat-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 header {
   display: flex;
@@ -232,6 +332,7 @@ header h1 {
   .main {
     width: 100%;
   }
+  .settings-view { padding: 16px; }
   .menu-btn { display: block; }
   header {
     padding: 12px;
@@ -266,6 +367,7 @@ header h1 {
     flex-shrink: 0;
     padding: 0 14px;
   }
+  .input-bar #fleetBtn { padding: 4px 7px; font-size: 11px; max-width: 92px; }
 }
 
 .messages {
@@ -293,6 +395,10 @@ header h1 {
   background: var(--bubble-user);
   color: white;
   border-bottom-right-radius: 4px;
+}
+
+.msg.user .msg-time {
+  color: rgba(255, 255, 255, 0.75);
 }
 
 .msg.bot {
@@ -365,6 +471,14 @@ header h1 {
   opacity: 0.8;
 }
 
+.msg-time {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.75;
+  text-align: right;
+}
+
 .input-bar {
   display: flex;
   gap: 8px;
@@ -414,11 +528,24 @@ header h1 {
   height: 64px;
 }
 
-.attachment-preview img {
+.attachment-preview img, .attachment-file-name {
   width: 100%;
   height: 100%;
   border-radius: 8px;
   object-fit: cover;
+}
+
+.attachment-file-name {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  background: #303646;
+  color: var(--text);
+  font-size: 10px;
+  text-align: center;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .attachment-preview button {

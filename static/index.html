@@ -11,6 +11,7 @@
     <aside id="sidebar" class="sidebar">
       <button id="closeSidebarBtn" class="close-sidebar-btn" type="button" aria-label="Chiudi sidebar">&lt;</button>
       <button id="newChatBtn" class="new-chat-btn">＋ Nuova chat</button>
+      <button id="settingsBtn" class="new-chat-btn" type="button" aria-controls="settingsView" aria-expanded="false">Impostazioni</button>
       <div id="chatList" class="chat-list"></div>
       <label class="model-select">
         Modello nuova chat
@@ -41,23 +42,94 @@
         <h1>🤖 Copilot CLI Webchat @ raspberrypi</h1>
       </header>
 
-      <div id="chatUsage" class="chat-usage-summary" aria-live="polite"></div>
-      <main id="messages" class="messages"></main>
-
-      <div id="attachmentPicker" class="attachment-picker" hidden>
-        <label id="attachmentDropzone" class="attachment-dropzone" for="attachmentInput">
-          <span>Clicca per selezionare o trascina immagini</span>
-          <small>PNG, JPEG, GIF o WebP · massimo 10 MB ciascuna</small>
-        </label>
-        <div id="attachmentPreviews" class="attachment-previews"></div>
-        <input id="attachmentInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+      <div id="chatNotice" class="chat-notice" role="status" aria-live="polite" hidden></div>
+      <section id="settingsView" class="settings-view" aria-labelledby="settingsTitle" hidden>
+        <h2 id="settingsTitle" tabindex="-1">Impostazioni</h2>
+        <div class="settings-grid">
+          <section class="settings-card" aria-labelledby="generalTitle">
+            <h3 id="generalTitle">Generali</h3>
+            <label class="advanced-switch"><input id="advancedModeToggle" type="checkbox"> Modalità avanzata</label>
+            <p>Questa scelta vale per questo browser. La chat normale rimane invariata quando è disattivata.</p>
+          </section>
+          <section class="settings-card" aria-labelledby="chatSettingsTitle">
+            <h3 id="chatSettingsTitle">Chat <span id="settingsChatName">nuova</span></h3>
+            <p>Le autorizzazioni si applicano alla chat selezionata; per una nuova chat vengono salvate al primo messaggio.</p>
+            <label class="model-select" for="settingsModelSelect">
+              Modello nuova chat
+              <select id="settingsModelSelect">
+                <option value="auto">Auto</option>
+                <option value="claude-sonnet-5">Claude Sonnet 5</option>
+                <option value="gpt-6-sol">GPT-6 Sol</option>
+                <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+                <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
+                <option value="gpt-6-luna">GPT-6 Luna</option>
+                <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+                <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
+                <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+              </select>
+            </label>
+            <fieldset class="permission-select">
+              <legend>Autorizzazioni chat</legend>
+              <label><input type="checkbox" data-permission="shell"> Eseguire comandi</label>
+              <label><input type="checkbox" data-permission="write"> Modificare file</label>
+              <label><input type="checkbox" data-permission="all"> Consenti tutto</label>
+            </fieldset>
+            <div class="settings-advanced" data-advanced hidden>
+              <label class="advanced-switch"><input id="planToggle" type="checkbox"> Modalità piano (prossimo invio)</label>
+              <label class="advanced-switch"><input id="fleetToggle" type="checkbox"> Mostra pulsante Esegui in parallelo (fleet)</label>
+              <fieldset class="permission-select">
+                <legend>Tool specifici</legend>
+                <label for="toolPermissions">Pattern CLI esatti, uno per riga (es. shell(git status)). Per una nuova chat saranno salvati al primo messaggio; non è un'approvazione interattiva.</label>
+                <textarea id="toolPermissions" rows="3" placeholder="shell(git status)"></textarea>
+                <button id="saveToolPermissions" type="button">Salva tool</button>
+              </fieldset>
+              <fieldset class="permission-select">
+                <legend>Server MCP per questa chat</legend>
+                <div id="mcpList"></div>
+                <small>Configura i server qui sotto, poi seleziona quelli da usare nella chat.</small>
+              </fieldset>
+            </div>
+          </section>
+          <section class="settings-card general-advanced" data-advanced hidden aria-labelledby="mcpSettingsTitle">
+            <h3 id="mcpSettingsTitle">Server MCP disponibili</h3>
+            <div id="mcpConfigList"></div>
+            <form id="mcpForm" class="sidebar-form">
+              <input id="mcpName" placeholder="Nome server" aria-label="Nome server" required>
+              <textarea id="mcpConfig" rows="4" placeholder='{"command":"/percorso/assoluto","args":[],"env":{}}' aria-label="Configurazione JSON MCP" required></textarea>
+              <button type="submit">Aggiungi server</button>
+            </form>
+          </section>
+          <section class="settings-card general-advanced" data-advanced hidden aria-labelledby="skillsSettingsTitle">
+            <h3 id="skillsSettingsTitle">Skill e plugin disponibili</h3>
+            <div id="skillsList">Caricamento...</div>
+            <small>Gestiti dalla CLI; non attivabili per singola chat.</small>
+          </section>
+        </div>
+      </section>
+      <div id="chatView" class="chat-view">
+        <div id="chatUsage" class="chat-usage-summary" aria-live="polite"></div>
+        <main id="messages" class="messages"></main>
+        <div id="attachmentPicker" class="attachment-picker" hidden>
+          <div id="attachmentDropzone" class="attachment-dropzone" role="button" tabindex="0">
+            <span>Clicca per selezionare o trascina file</span>
+            <small>Qualsiasi tipo di file · massimo 10 MB ciascuno</small>
+          </div>
+          <div id="attachmentPreviews" class="attachment-previews"></div>
+          <div class="advanced-attachments" data-advanced hidden>
+            <button id="screenshotBtn" type="button">Scatta screenshot</button>
+            <button id="dictationBtn" type="button">Dettatura</button>
+            <span id="dictationStatus" role="status" aria-live="polite"></span>
+          </div>
+          <input id="attachmentInput" type="file" name="files" multiple hidden>
+        </div>
+        <div id="slashSuggestions" class="slash-suggestions" data-advanced hidden></div>
+        <form id="chatForm" class="input-bar">
+          <button type="button" id="attachmentBtn" class="attachment-btn" aria-label="Allega file" aria-expanded="false">+</button>
+          <textarea id="input" placeholder="Scrivi un messaggio..." rows="1" autofocus></textarea>
+          <button type="button" id="fleetBtn" data-advanced hidden>Esegui in parallelo (fleet)</button>
+          <button type="submit" id="sendBtn">Invia</button>
+        </form>
       </div>
-
-      <form id="chatForm" class="input-bar">
-        <button type="button" id="attachmentBtn" class="attachment-btn" aria-label="Allega immagini" aria-expanded="false">+</button>
-        <textarea id="input" placeholder="Scrivi un messaggio..." rows="1" autofocus></textarea>
-        <button type="submit" id="sendBtn">Invia</button>
-      </form>
     </div>
   </div>
 
