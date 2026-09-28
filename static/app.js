@@ -23,8 +23,6 @@ const attachmentDropzone = document.getElementById("attachmentDropzone");
 const attachmentPreviews = document.getElementById("attachmentPreviews");
 const advancedModeToggle = document.getElementById("advancedModeToggle");
 const planToggle = document.getElementById("planToggle");
-const fleetToggle = document.getElementById("fleetToggle");
-const fleetBtn = document.getElementById("fleetBtn");
 const chatNotice = document.getElementById("chatNotice");
 const toolPermissionsInput = document.getElementById("toolPermissions");
 const mcpList = document.getElementById("mcpList");
@@ -32,9 +30,9 @@ const mcpConfigList = document.getElementById("mcpConfigList");
 const skillsList = document.getElementById("skillsList");
 const slashSuggestions = document.getElementById("slashSuggestions");
 const dictationStatus = document.getElementById("dictationStatus");
+const rebuildChatsBtn = document.getElementById("rebuildChatsBtn");
 
 let currentChatId = null;
-let settingsOpen = false;
 let attachedFiles = [];
 let busy = false;
 let mcpServers = [];
@@ -66,12 +64,6 @@ function advancedEnabled() {
   return advancedModeToggle.checked;
 }
 
-function syncFleetButton() {
-  const fleetEnabled = advancedEnabled() && fleetToggle.checked;
-  fleetBtn.hidden = !fleetEnabled;
-  fleetBtn.disabled = !fleetEnabled || busy || planToggle.checked || pendingPlan;
-}
-
 function syncAdvancedMode() {
   syncToolControls();
   document.querySelectorAll("[data-advanced]").forEach((element) => {
@@ -86,7 +78,6 @@ function syncAdvancedMode() {
     const planMessage = messagesEl.querySelector(".pending-plan-message");
     if (planMessage) attachPlanActions(planMessage);
   }
-  syncFleetButton();
   if (advancedEnabled()) {
     loadMcpServers();
     loadSkills();
@@ -94,17 +85,9 @@ function syncAdvancedMode() {
   updateSlashSuggestions();
 }
 advancedModeToggle.checked = localStorage.getItem("copilot-advanced-mode") === "true";
-fleetToggle.checked = localStorage.getItem("copilot-fleet-enabled") === "true";
 advancedModeToggle.addEventListener("change", () => {
   localStorage.setItem("copilot-advanced-mode", String(advancedEnabled()));
   syncAdvancedMode();
-});
-fleetToggle.addEventListener("change", () => {
-  localStorage.setItem("copilot-fleet-enabled", String(fleetToggle.checked));
-  syncFleetButton();
-});
-planToggle.addEventListener("change", () => {
-  syncFleetButton();
 });
 
 function syncSidebarWithViewport() {
@@ -131,7 +114,6 @@ for (const select of [modelSelect, settingsModelSelect]) {
 }
 
 function showSettings(open) {
-  settingsOpen = open;
   settingsView.hidden = !open;
   chatView.hidden = open;
   settingsBtn.classList.toggle("active", open);
@@ -614,6 +596,26 @@ document.getElementById("saveToolPermissions").addEventListener("click", async (
   }
 });
 
+rebuildChatsBtn.addEventListener("click", async () => {
+  if (!window.confirm("Ricostruire il database usando le sessioni della webchat?")) return;
+  rebuildChatsBtn.disabled = true;
+  showNotice("Aggiornamento del database chat in corso...");
+  try {
+    const data = await jsonRequest("/api/chats/rebuild", "POST", {});
+    currentChatId = null;
+    pendingPlan = false;
+    messagesEl.innerHTML = "";
+    renderChatUsage();
+    settingsChatName.textContent = "nuova";
+    await loadChatList();
+    showNotice(`Database chat aggiornato: ${data.count} chat ricostruite`);
+  } catch (err) {
+    showNotice(err.message);
+  } finally {
+    rebuildChatsBtn.disabled = false;
+  }
+});
+
 document.getElementById("screenshotBtn").addEventListener("click", async () => {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     showNotice("Cattura schermo non supportata dal browser");
@@ -779,7 +781,6 @@ async function openChat(chatId) {
   selectedMcpServers = chatMcpServers.get(chatId) || [];
   toolPermissionsInput.value = (chatTools.get(chatId) || []).join("\n");
   renderMcpServers();
-  syncFleetButton();
   renderChatUsage();
   syncPermissions(chatPermissions.get(chatId) || []);
   messagesEl.innerHTML = "";
@@ -829,7 +830,6 @@ function attachPlanActions(element) {
         showNotice(err.message);
       } finally {
         busy = false;
-        syncFleetButton();
       }
     });
     actions.append(button);
@@ -866,7 +866,18 @@ async function streamChat(formData, pending, activity) {
       .map((line) => line.slice(5).trimStart()).join("\n");
     if (!payload) return;
     const event = JSON.parse(payload);
-    if (event.type === "done") {
+    if (event.type === "chat_created") {
+      currentChatId = event.chat_id;
+      syncToolControls();
+      chatPermissions.set(currentChatId, selectedPermissions());
+      chatPlans.set(currentChatId, false);
+      if (advancedEnabled()) {
+        chatMcpServers.set(currentChatId, [...selectedMcpServers]);
+        chatTools.set(currentChatId, selectedTools());
+      }
+      renderChatUsage();
+      loadChatList();
+    } else if (event.type === "done") {
       complete = event;
     } else if (event.type === "error") {
       const error = new Error(event.error || "Errore durante lo streaming");
@@ -923,7 +934,7 @@ async function sendCommand(text) {
   return true;
 }
 
-async function submitChat(e, fleet = false) {
+async function submitChat(e) {
   e.preventDefault();
   if (busy || pendingPlan) {
     if (pendingPlan) showNotice("Approva o annulla il piano prima di continuare");
@@ -936,7 +947,6 @@ async function submitChat(e, fleet = false) {
   syncToolControls();
   renderMcpServers();
   sendBtn.disabled = true;
-  fleetBtn.disabled = true;
   newChatBtn.disabled = true;
   attachmentBtn.disabled = true;
   const advanced = advancedEnabled();
@@ -976,14 +986,13 @@ async function submitChat(e, fleet = false) {
       formData.append("mcp_servers", JSON.stringify(submissionServers));
       formData.append("tool_permissions", JSON.stringify(submissionTools));
       if (planToggle.checked) formData.append("plan", "true");
-      if (fleet) formData.append("fleet", "true");
     }
     submittedFiles.forEach((file) => formData.append("files", file));
     let data;
     if (advanced) data = await streamChat(formData, pending, activity);
     if (!data) {
-      if (advanced && (planToggle.checked || fleet || submissionServers.length || submissionTools.length)) {
-        throw new Error("Piano, fleet, MCP e tool specifici richiedono lo streaming; richiesta non inviata");
+      if (advanced && (planToggle.checked || submissionServers.length || submissionTools.length)) {
+        throw new Error("Piano, MCP e tool specifici richiedono lo streaming; richiesta non inviata");
       }
       const res = await fetch("/api/chat", { method: "POST", body: formData });
       data = await readApiResponse(res);
@@ -1044,7 +1053,6 @@ async function submitChat(e, fleet = false) {
     syncToolControls();
     renderMcpServers();
     sendBtn.disabled = false;
-    syncFleetButton();
     newChatBtn.disabled = false;
     attachmentBtn.disabled = false;
     updateSlashSuggestions();
@@ -1052,7 +1060,6 @@ async function submitChat(e, fleet = false) {
   }
 }
 form.addEventListener("submit", submitChat);
-fleetBtn.addEventListener("click", (event) => submitChat(event, true));
 
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -1076,7 +1083,6 @@ newChatBtn.addEventListener("click", async () => {
   selectedMcpServers = [];
   toolPermissionsInput.value = "";
   planToggle.checked = false;
-  syncFleetButton();
   renderMcpServers();
   renderChatUsage();
   syncPermissions([]);

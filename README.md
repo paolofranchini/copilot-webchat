@@ -21,15 +21,13 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 
 Premi **Impostazioni** sotto «Nuova chat» per aprire la schermata dedicata
 nell'area principale; scegli una chat dalla sidebar o premi «Nuova chat» per
-tornare ai messaggi. La schermata riunisce il modello e le autorizzazioni
-(disponibili anche nella sidebar), l'interruttore **Modalità avanzata**,
-le opzioni per la chat selezionata e la gestione dei server MCP e delle
+tornare ai messaggi. La schermata riunisce l'interruttore **Modalità avanzata**
+nella sezione Generali, il modello e le autorizzazioni (disponibili anche
+nella sidebar), le opzioni per la chat selezionata e la gestione dei server MCP e delle
 skill/plugin. Modello e autorizzazioni sono sincronizzati tra le due posizioni.
 La modalità avanzata è salvata nel `localStorage` del browser; di default
 è spenta e la chat normale continua a usare `POST /api/chat` senza nuovi
-flag. Anche il pulsante Fleet è nascosto di default: per mostrarlo, attiva
-l'opzione dedicata nelle funzioni avanzate delle impostazioni. La scelta vale
-per questo browser. Le impostazioni delle singole chat sono salvate nel database.
+flag. Le impostazioni delle singole chat sono salvate nel database.
 
 - **Streaming**: la chat avanzata legge gli eventi JSONL della CLI durante l'esecuzione
   tramite `POST /api/chat/stream` (SSE) e mostra l'attività dei tool. Se la CLI non
@@ -40,9 +38,6 @@ per questo browser. Le impostazioni delle singole chat sono salvate nel database
   L'utente può approvarlo o annullarlo; l'approvazione riprende la stessa sessione
   CLI con i permessi della chat. Finché il piano è in attesa, non è possibile inviare
   altri messaggi in modalità avanzata.
-- **Fleet**: il pulsante dedicato usa `--fleet` della CLI per delegare il lavoro ai
-  subagent. Gli eventi di attività vengono mostrati nello stream; la CLI restituisce
-  un'unica risposta finale, non messaggi separati per ciascun subagent.
 - **Server MCP locali**: è possibile registrare un comando con percorso assoluto,
   argomenti e variabili d'ambiente, abilitarlo globalmente e selezionarlo per chat.
   Viene passato alla CLI con `--additional-mcp-config` tramite un file temporaneo

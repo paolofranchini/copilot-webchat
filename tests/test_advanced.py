@@ -124,7 +124,7 @@ class AdvancedChatTests(unittest.TestCase):
         self.assertEqual([message["role"] for message in self.client.get(
             f"/api/chats/{plan['chat_id']}").json], ["user", "plan", "user", "bot"])
 
-    def test_mcp_granular_and_fleet(self):
+    def test_mcp_and_granular_permissions(self):
         invalid = self.client.post("/api/mcp-servers", json={
             "advanced": True, "name": "test", "config": {"command": "sh -c echo fail"}
         })
@@ -149,13 +149,13 @@ class AdvancedChatTests(unittest.TestCase):
             f"/api/chats/{created_chat}/tool-permissions",
             json={"advanced": True, "tools": ["shell(; rm -rf /)"]}).status_code, 400)
         response = self.events(self.client.post("/api/chat/stream", data={
-            "advanced": "true", "message": "lavoro", "fleet": "true",
+            "advanced": "true", "message": "lavoro",
             "mcp_servers": json.dumps([server_id]),
             "tool_permissions": '["shell(git status)"]'
         }))[-1]
         self.assertEqual(response["type"], "done")
         args = json.loads(self.args_path.read_text())
-        self.assertIn("--fleet", args)
+        self.assertNotIn("--fleet", args)
         self.assertIn("--allow-tool=shell(git status)", args)
         self.assertNotIn("--deny-tool=shell", args)
         self.assertEqual(json.loads(self.config_path.read_text())["mcpServers"]["test"]["command"],
@@ -169,6 +169,13 @@ class AdvancedChatTests(unittest.TestCase):
             "advanced": True
         }).status_code, 200)
         self.assertEqual(self.client.get("/api/mcp-servers").json, [])
+
+    def test_fleet_request_is_rejected(self):
+        response = self.client.post("/api/chat/stream", data={
+            "advanced": "true", "message": "lavoro", "fleet": "true"
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json, {"error": "fleet non supportato"})
 
     def test_new_chat_stores_advanced_selections_on_first_turn(self):
         server_id = self.client.post("/api/mcp-servers", json={
@@ -221,6 +228,21 @@ class AdvancedChatTests(unittest.TestCase):
                 "SELECT title, mcp_servers, tool_permissions, pending_plan FROM chats"
             ).fetchone()
             self.assertEqual(chat, ("Titolo", "[]", "[]", None))
+
+    def test_chat_history_orders_backfilled_messages_by_timestamp(self):
+        chat_id = self.events(self.client.post("/api/chat/stream", data={
+            "advanced": "true", "message": "messaggio recente"
+        }))[-1]["chat_id"]
+        with self.backend.app.app_context():
+            db = self.backend.get_db()
+            db.execute(
+                "INSERT INTO messages (chat_id, role, content, ts) "
+                "VALUES (?, 'bot', 'aggiornamento precedente', ?)",
+                (chat_id, "2020-01-01T00:00:00+00:00"),
+            )
+            db.commit()
+        messages = self.client.get(f"/api/chats/{chat_id}").json
+        self.assertEqual(messages[0]["content"], "aggiornamento precedente")
 
     def test_stream_timeout_and_client_disconnect_close_process(self):
         with patch.object(self.backend, "TIMEOUT_SECONDS", 0.1):

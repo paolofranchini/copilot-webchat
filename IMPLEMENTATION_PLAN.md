@@ -19,16 +19,17 @@ agente rubber-duck/code-review integrato.
 | 2. Plan mode | Completata | `--plan`, autorizzazioni negate nel turno di pianificazione, `pending_plan`, messaggi `role='plan'`, approvazione con `--resume` e annullamento. Non esiste un tag separato per piano approvato/rifiutato nella cronologia. |
 | 3. MCP custom | Completata | CRUD globale nella schermata Impostazioni, selezione per chat, configurazione locale validata e passata tramite `--additional-mcp-config` con file temporaneo. I server configurati direttamente nella CLI non sono gestiti qui. |
 | 4. Skill / plugin | Parziale (limite CLI) | `GET /api/skills` legge le liste JSON in sola lettura. Nessuna selezione dinamica per chat: la CLI verificata non espone un flag `--skill` per `-p`. |
-| 5. Fleet | Parziale | Il pulsante usa il flag nativo `--fleet` in `-p` ed è nascosto di default; si può mostrare attivando l'opzione Fleet nelle impostazioni della modalità avanzata. Entrambe le scelte sono salvate nel `localStorage` del browser. Attività e risposta finale sono visibili, ma non ci sono messaggi figli, stato o schede separati per subagent: la CLI restituisce una risposta aggregata. |
+| 5. Fleet | Esclusa | Funzione rimossa dalla webchat perché non utilizzata; le richieste con il parametro `fleet` vengono rifiutate. |
 | 6. Slash command | Parziale | Whitelist webchat `/help`, `/usage`, `/model <modello>` con suggerimenti; gli altri comandi della CLI interattiva non sono implementati. |
 | 7. Permessi granulari | Parziale (limite CLI) | Pattern tool per chat validati e passati come `--allow-tool`; nessun flusso di approvazione bidirezionale per singola azione in `-p`. Restano le autorizzazioni `shell` / `write` / `all`. |
 | 8. Allegati estesi | Completata | Screenshot tramite condivisione schermo e dettatura nel browser, quando disponibili. Le API possono richiedere HTTPS o localhost; nessun audio è inviato al backend. |
 
 **Organizzazione UI**: il pulsante Impostazioni sotto «Nuova chat» apre
-la schermata nell'area principale. Comprende l'interruttore avanzato,
-modello e autorizzazioni (ripetuti e sincronizzati con quelli della sidebar),
-modalità piano, opzione per mostrare Fleet, pattern tool, selezione MCP della
-chat, CRUD globale dei server MCP e lista skill/plugin. Selezionare una chat
+la schermata nell'area principale. Include le impostazioni generali con
+l'interruttore avanzato, seguite dalle impostazioni per chat (modello e
+autorizzazioni ripetuti e sincronizzati con quelli della sidebar, modalità
+piano, pattern tool e selezione MCP), il CRUD
+globale dei server MCP e la lista skill/plugin. Selezionare una chat
 o crearne una nuova riporta alla vista messaggi. Nessuna nuova impostazione
 server-side globale è necessaria per questa separazione.
 
@@ -45,9 +46,7 @@ server-side globale è necessaria per questa separazione.
 - Quando `true`:
   - Compaiono nella schermata Impostazioni i controlli per chat (plan mode,
     selezione MCP, permessi granulari), il CRUD globale MCP e l'elenco
-    skill/plugin e l'opzione per mostrare il pulsante Fleet; nella chat
-    compaiono gli allegati estesi e Fleet solo se attivato esplicitamente
-    nelle impostazioni.
+    skill/plugin; nella chat compaiono gli allegati estesi.
   - Le richieste al backend includono un flag `advanced: true` così il
     backend sa quali funzionalità/flag CLI aggiuntivi abilitare.
 - Il backend deve trattare l'assenza del flag `advanced` (o `false`) come
@@ -168,18 +167,8 @@ l'abilitazione dinamica a una fase successiva.
 
 ### 5. Fleet / subagent paralleli
 
-**Perché**: la CLI può delegare a più subagent in parallelo (`/fleet`).
-
-**Implementato**:
-- La richiesta passa il flag nativo `--fleet` alla CLI tramite lo streaming
-  in modalità non interattiva; gli eventi di attività sono mostrati nella chat.
-- Il pulsante è nascosto per impostazione predefinita. Per mostrarlo occorre
-  attivare la modalità avanzata e, nelle relative impostazioni, l'opzione
-  dedicata. Entrambe le preferenze sono locali al browser e persistite in
-  `localStorage`.
-
-**Limite residuo**: la CLI restituisce una risposta finale aggregata; non
-sono disponibili messaggi, stato o schede separati per ciascun subagent.
+**Esclusa su richiesta**: non è più disponibile il pulsante, né l'opzione
+per abilitarlo. Il backend rifiuta il parametro `fleet` senza invocare la CLI.
 
 ### 6. Slash command generici
 
@@ -266,7 +255,7 @@ upload/drag&drop di file esistenti.
   avanzata" che descrive le funzionalità sperimentali e le loro
   limitazioni rispetto alla CLI reale.
 - **Verifica flag CLI**: prima di ogni fase che introduce nuovi flag
-  (`--plan`, MCP, skill, fleet), verificare con `copilot --help` /
+  (`--plan`, MCP, skill), verificare con `copilot --help` /
   changelog aggiornato sull'host di destinazione, perché la disponibilità
   di questi flag in modalità `-p` non interattiva non è garantita e può
   cambiare tra versioni della CLI.
@@ -277,7 +266,7 @@ upload/drag&drop di file esistenti.
 2. Plan mode
 3. Configurazione MCP server custom
 4. Skill / plugin
-5. Fleet / subagent paralleli
+5. Fleet / subagent paralleli — esclusa
 6. Slash command generici
 7. Permessi granulari per singolo tool/comando
 8. Allegati estesi (screenshot / dettatura vocale)

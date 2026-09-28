@@ -46,6 +46,8 @@ MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 5
 MAX_TEXT_ATTACHMENT_SIZE = 1 * 1024 * 1024
 UPLOAD_DIR = CONFIG_DIR / "webchat_uploads"
+SESSION_STATE_DIR = CONFIG_DIR / "session-state"
+WEBCHAT_SESSION_PREFIX = "webchat:"
 PERMISSION_FLAGS = {
     "shell": "--allow-tool=shell",
     "write": "--allow-tool=write",
@@ -300,6 +302,119 @@ def store_chat_usage(db, chat_id, usage):
     db.commit()
 
 
+def read_session_metadata(path):
+    metadata = {}
+    try:
+        for line in (path / "workspace.yaml").read_text().splitlines():
+            key, separator, value = line.partition(":")
+            if separator:
+                metadata[key.strip()] = value.strip()
+    except (OSError, UnicodeDecodeError):
+        return metadata
+    return metadata
+
+
+def session_display_name(name):
+    return name.removeprefix(WEBCHAT_SESSION_PREFIX).strip()
+
+
+def write_session_name(session_id, title):
+    if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
+        return
+    path = SESSION_STATE_DIR / session_id / "workspace.yaml"
+    if not path.is_file():
+        return
+    lines = path.read_text().splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("name:"):
+            lines[index] = f"name: {WEBCHAT_SESSION_PREFIX}{title}"
+            path.write_text("\n".join(lines) + "\n")
+            return
+    path.write_text(
+        "\n".join([f"name: {WEBCHAT_SESSION_PREFIX}{title}", *lines]) + "\n"
+    )
+
+
+def rebuild_chat_database(db):
+    chats = []
+    if SESSION_STATE_DIR.exists():
+        for session_dir in SESSION_STATE_DIR.iterdir():
+            if not session_dir.is_dir() or not re.fullmatch(
+                r"[0-9a-f-]{36}", session_dir.name
+            ):
+                continue
+            events_path = session_dir / "events.jsonl"
+            if not events_path.is_file():
+                continue
+            metadata = read_session_metadata(session_dir)
+            if not metadata.get("name", "").startswith(WEBCHAT_SESSION_PREFIX):
+                continue
+            messages = []
+            try:
+                for line in events_path.read_text().splitlines():
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        app.logger.warning("Evento sessione non valido: %s", events_path)
+                        continue
+                    event_data = event.get("data", {})
+                    if not isinstance(event_data, dict):
+                        continue
+                    role = (
+                        "user" if event.get("type") == "user.message"
+                        else "bot" if event.get("type") == "assistant.message"
+                        else None
+                    )
+                    content = event_data.get("content")
+                    if role and isinstance(content, str) and content.strip():
+                        messages.append({
+                            "role": role,
+                            "content": content,
+                            "model": event_data.get("model") if role == "bot" else None,
+                            "ts": event.get("timestamp") or "",
+                        })
+            except (OSError, UnicodeDecodeError) as exc:
+                app.logger.warning("Sessione non leggibile %s: %s", events_path, exc)
+                continue
+            if not any(message["role"] == "user" for message in messages):
+                continue
+            first_user = next(message for message in messages if message["role"] == "user")
+            title = session_display_name(metadata["name"]) or first_user["content"][:60]
+            created_at = (
+                metadata.get("created_at")
+                or first_user["ts"]
+                or datetime.fromtimestamp(
+                    events_path.stat().st_mtime, timezone.utc
+                ).isoformat()
+            )
+            chats.append((session_dir.name, title[:120], created_at, messages))
+
+    db.execute("DELETE FROM messages")
+    db.execute("DELETE FROM chats")
+    for chat_id, title, created_at, messages in chats:
+        db.execute(
+            "INSERT INTO chats (id, title, created_at, permissions) VALUES (?, ?, ?, '[]')",
+            (chat_id, title or "Senza titolo", created_at),
+        )
+        for message in messages:
+            db.execute(
+                "INSERT INTO messages (chat_id, role, content, model, ts) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (chat_id, message["role"], message["content"],
+                 message["model"], message["ts"] or created_at),
+            )
+        first_model = next(
+            (message["model"] for message in messages
+             if message["role"] == "bot" and message["model"]),
+            None,
+        )
+        if first_model:
+            db.execute("UPDATE chats SET model = ? WHERE id = ?",
+                       (first_model, chat_id))
+    db.commit()
+    return len(chats)
+
+
 class CopilotRunError(RuntimeError):
     def __init__(self, message, usage, status_code=500):
         super().__init__(message)
@@ -339,7 +454,10 @@ def run_copilot(
     prompt = prompt.replace("\x00", "\\0")
     args = [COPILOT_BIN]
     if is_new:
-        args += ["--session-id", copilot_session_id]
+        args += [
+            "--session-id", copilot_session_id,
+            "--name", f"{WEBCHAT_SESSION_PREFIX}{copilot_session_id}",
+        ]
     else:
         args += ["--resume", copilot_session_id]
     args += ["--model", model]
@@ -405,10 +523,12 @@ def run_copilot(
 
 
 def advanced_args(chat_id, is_new, model, permissions, attachments, tools, servers,
-                  plan, fleet, is_approval=False):
+                  plan, is_approval=False):
     args = [COPILOT_BIN]
     args += ["--session-id" if is_new else "--resume", chat_id, "--model", model,
              "--no-ask-user"]
+    if is_new:
+        args += ["--name", f"{WEBCHAT_SESSION_PREFIX}{chat_id}"]
     if plan:
         args += ["--plan", "--deny-tool=shell", "--deny-tool=write", "--deny-tool=url",
                  "--disable-builtin-mcps"]
@@ -424,8 +544,6 @@ def advanced_args(chat_id, is_new, model, permissions, attachments, tools, serve
                 ):
                     args.append(flag)
             args.extend(f"--allow-tool={tool}" for tool in tools)
-        if fleet:
-            args.append("--fleet")
         if servers:
             config_fd, config_path = tempfile.mkstemp(
                 prefix="webchat-mcp-", suffix=".json", dir=CONFIG_DIR
@@ -628,6 +746,7 @@ def list_chats():
     chats = []
     for row in rows:
         chat = dict(row)
+        chat["title"] = session_display_name(chat["title"])
         chat["permissions"] = json.loads(chat["permissions"])
         chat["usage"] = json.loads(chat["usage"]) if chat["usage"] else None
         chat["pending_plan"] = bool(chat["pending_plan"])
@@ -637,11 +756,23 @@ def list_chats():
     return jsonify(chats)
 
 
+@app.route("/api/chats/rebuild", methods=["POST"])
+def rebuild_chats():
+    try:
+        count = rebuild_chat_database(get_db())
+    except (OSError, sqlite3.Error) as exc:
+        get_db().rollback()
+        app.logger.error("Impossibile aggiornare il database chat: %s", exc)
+        return jsonify({"error": "impossibile aggiornare il database chat"}), 500
+    session.pop("copilot_session_id", None)
+    return jsonify({"ok": True, "count": count})
+
+
 @app.route("/api/chats/<chat_id>", methods=["GET"])
 def get_chat(chat_id):
     db = get_db()
     rows = db.execute(
-        "SELECT role, content, model, ts FROM messages WHERE chat_id = ? ORDER BY id ASC",
+        "SELECT role, content, model, ts FROM messages WHERE chat_id = ? ORDER BY ts ASC, id ASC",
         (chat_id,),
     ).fetchall()
     first_model = next((row["model"] for row in rows if row["role"] == "bot" and row["model"]), None)
@@ -687,6 +818,12 @@ def update_chat_title(chat_id):
     )
     if result.rowcount == 0:
         return jsonify({"error": "chat non trovata"}), 404
+    try:
+        write_session_name(chat_id, title)
+    except (OSError, UnicodeDecodeError) as exc:
+        db.rollback()
+        app.logger.error("Impossibile aggiornare il nome della sessione: %s", exc)
+        return jsonify({"error": "impossibile aggiornare il nome della sessione"}), 500
     db.commit()
     return jsonify({"ok": True, "title": title})
 
@@ -697,6 +834,20 @@ def delete_chat(chat_id):
     row = db.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone()
     if row is None:
         return jsonify({"error": "chat non trovata"}), 404
+    try:
+        session_path = SESSION_STATE_DIR / chat_id / "workspace.yaml"
+        if session_path.is_file():
+            lines = session_path.read_text().splitlines()
+            for index, line in enumerate(lines):
+                if line.startswith("name:"):
+                    name = line.partition(":")[2].strip()
+                    if name.startswith(WEBCHAT_SESSION_PREFIX):
+                        lines[index] = f"name: {session_display_name(name)}"
+                        session_path.write_text("\n".join(lines) + "\n")
+                    break
+    except (OSError, UnicodeDecodeError) as exc:
+        app.logger.error("Impossibile scollegare la sessione Copilot: %s", exc)
+        return jsonify({"error": "impossibile eliminare la chat"}), 500
     db.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
     db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
     db.commit()
@@ -873,9 +1024,8 @@ def chat_stream():
     if len(model) > 80 or not re.fullmatch(r"[a-zA-Z0-9._-]+", model):
         return jsonify({"error": "modello non valido"}), 400
     plan = data.get("plan") == "true"
-    fleet = data.get("fleet") == "true"
-    if plan and fleet:
-        return jsonify({"error": "piano e fleet non sono combinabili"}), 400
+    if "fleet" in data:
+        return jsonify({"error": "fleet non supportato"}), 400
     attachments = []
     try:
         attachments = save_attachments(uploaded)
@@ -911,7 +1061,7 @@ def chat_stream():
         args = advanced_args(chat_id, is_new or row is None,
                              row["model"] or model if row else model,
                              permissions, copilot_attachments, requested_tools,
-                             selected_mcp_servers(db, chat_id), plan, fleet)
+                             selected_mcp_servers(db, chat_id), plan)
     except OSError as exc:
         for path in attachments:
             path.unlink(missing_ok=True)
@@ -927,8 +1077,17 @@ def chat_stream():
     prompt += "".join(text_attachments)
     if plan:
         prompt += "\n\nPrepara solo un piano; non modificare file e non eseguire comandi."
-    stream = run_copilot_stream(args, prompt, chat_id,
-                                row["model"] or model if row else model, plan, attachments)
+    def stream_with_chat():
+        # La chat e' gia' stata committata insieme al primo messaggio: rendila
+        # visibile subito nella sidebar, senza attendere la risposta di Copilot.
+        yield sse({"type": "chat_created", "chat_id": chat_id,
+                   "title": message[:60] or "File allegato"})
+        yield from run_copilot_stream(
+            args, prompt, chat_id, row["model"] or model if row else model,
+            plan, attachments
+        )
+
+    stream = stream_with_chat()
     return Response(stream_with_context(stream), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -949,7 +1108,7 @@ def approve_plan():
     prompt = "Approvo il piano proposto. Procedi con l'implementazione."
     args = advanced_args(chat_id, False, model, json.loads(row["permissions"]), [],
                          json.loads(row["tool_permissions"]),
-                         selected_mcp_servers(db, chat_id), False, False, is_approval=True)
+                         selected_mcp_servers(db, chat_id), False, is_approval=True)
     db.execute("INSERT INTO messages (chat_id, role, content, ts) VALUES (?, 'user', ?, ?)",
                (chat_id, prompt, now))
     db.commit()

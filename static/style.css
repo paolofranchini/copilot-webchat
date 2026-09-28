@@ -28,6 +28,8 @@ html, body {
 
 .sidebar {
   width: 220px;
+  min-width: 180px;
+  max-width: 50vw;
   flex-shrink: 0;
   background: var(--panel);
   border-right: 1px solid #262a36;
@@ -36,7 +38,8 @@ html, body {
   padding: 10px;
   gap: 8px;
   transition: margin-left 0.2s ease;
-  overflow-y: auto;
+  overflow: hidden;
+  resize: horizontal;
 }
 [hidden] { display: none !important; }
 .settings-view {
@@ -146,15 +149,17 @@ html, body {
 }
 
 .chat-list {
-  flex: 1;
-  min-height: 100px;
-  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 .chat-item {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -304,9 +309,12 @@ header h1 {
     top: 0;
     bottom: 0;
     width: min(84vw, 300px);
+    min-width: 0;
+    max-width: none;
     z-index: 10;
     box-shadow: 10px 0 28px rgba(0, 0, 0, 0.35);
     transition: transform 0.2s ease;
+    resize: none;
   }
   .close-sidebar-btn {
     display: block;
@@ -367,7 +375,6 @@ header h1 {
     flex-shrink: 0;
     padding: 0 14px;
   }
-  .input-bar #fleetBtn { padding: 4px 7px; font-size: 11px; max-width: 92px; }
 }
 
 .messages {

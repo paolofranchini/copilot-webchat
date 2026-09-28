@@ -50,6 +50,8 @@
             <h3 id="generalTitle">Generali</h3>
             <label class="advanced-switch"><input id="advancedModeToggle" type="checkbox"> Modalità avanzata</label>
             <p>Questa scelta vale per questo browser. La chat normale rimane invariata quando è disattivata.</p>
+            <button id="rebuildChatsBtn" type="button">Aggiorna database chat</button>
+            <small>Ricostruisce l'elenco usando solo le sessioni create dalla webchat.</small>
           </section>
           <section class="settings-card" aria-labelledby="chatSettingsTitle">
             <h3 id="chatSettingsTitle">Chat <span id="settingsChatName">nuova</span></h3>
@@ -76,7 +78,6 @@
             </fieldset>
             <div class="settings-advanced" data-advanced hidden>
               <label class="advanced-switch"><input id="planToggle" type="checkbox"> Modalità piano (prossimo invio)</label>
-              <label class="advanced-switch"><input id="fleetToggle" type="checkbox"> Mostra pulsante Esegui in parallelo (fleet)</label>
               <fieldset class="permission-select">
                 <legend>Tool specifici</legend>
                 <label for="toolPermissions">Pattern CLI esatti, uno per riga (es. shell(git status)). Per una nuova chat saranno salvati al primo messaggio; non è un'approvazione interattiva.</label>
@@ -126,7 +127,6 @@
         <form id="chatForm" class="input-bar">
           <button type="button" id="attachmentBtn" class="attachment-btn" aria-label="Allega file" aria-expanded="false">+</button>
           <textarea id="input" placeholder="Scrivi un messaggio..." rows="1" autofocus></textarea>
-          <button type="button" id="fleetBtn" data-advanced hidden>Esegui in parallelo (fleet)</button>
           <button type="submit" id="sendBtn">Invia</button>
         </form>
       </div>
