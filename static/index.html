@@ -14,7 +14,7 @@
       <button id="settingsBtn" class="new-chat-btn" type="button" aria-controls="settingsView" aria-expanded="false">Impostazioni</button>
       <div id="chatList" class="chat-list"></div>
       <label class="model-select">
-        Modello nuova chat
+        <span data-model-label>Modello nuova chat</span>
         <select id="modelSelect">
           <option value="auto">Auto</option>
           <option value="claude-sonnet-5">Claude Sonnet 5</option>
@@ -27,12 +27,14 @@
           <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
         </select>
       </label>
-      <fieldset class="permission-select">
-        <legend>Autorizzazioni chat</legend>
-        <label><input type="checkbox" data-permission="shell"> Eseguire comandi</label>
-        <label><input type="checkbox" data-permission="write"> Modificare file</label>
-        <label><input type="checkbox" data-permission="all"> Consenti tutto</label>
-      </fieldset>
+      <label class="model-select">
+        Modalità chat
+        <select data-permission-mode>
+          <option value="ask">Ask</option>
+          <option value="edit">Edit</option>
+          <option value="agent">Agent</option>
+        </select>
+      </label>
       <button id="logoutBtn" class="logout-btn">Esci</button>
     </aside>
 
@@ -50,14 +52,13 @@
             <h3 id="generalTitle">Generali</h3>
             <label class="advanced-switch"><input id="advancedModeToggle" type="checkbox"> Modalità avanzata</label>
             <p>Questa scelta vale per questo browser. La chat normale rimane invariata quando è disattivata.</p>
-            <button id="rebuildChatsBtn" type="button">Aggiorna database chat</button>
-            <small>Ricostruisce l'elenco usando solo le sessioni create dalla webchat.</small>
+            <p>La sidebar mostra le sessioni native di Copilot. Eliminare una sessione rimuove definitivamente i relativi file e la cronologia.</p>
           </section>
           <section class="settings-card" aria-labelledby="chatSettingsTitle">
             <h3 id="chatSettingsTitle">Chat <span id="settingsChatName">nuova</span></h3>
             <p>Le autorizzazioni si applicano alla chat selezionata; per una nuova chat vengono salvate al primo messaggio.</p>
             <label class="model-select" for="settingsModelSelect">
-              Modello nuova chat
+              <span data-model-label>Modello nuova chat</span>
               <select id="settingsModelSelect">
                 <option value="auto">Auto</option>
                 <option value="claude-sonnet-5">Claude Sonnet 5</option>
@@ -70,12 +71,15 @@
                 <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
               </select>
             </label>
-            <fieldset class="permission-select">
-              <legend>Autorizzazioni chat</legend>
-              <label><input type="checkbox" data-permission="shell"> Eseguire comandi</label>
-              <label><input type="checkbox" data-permission="write"> Modificare file</label>
-              <label><input type="checkbox" data-permission="all"> Consenti tutto</label>
-            </fieldset>
+            <label class="model-select">
+              Modalità chat
+              <select data-permission-mode>
+                <option value="ask">Ask</option>
+                <option value="edit">Edit</option>
+                <option value="agent">Agent</option>
+              </select>
+              <small>Ask: nessun tool. Edit: comandi e file. Agent: tutti i permessi in modalità autonoma.</small>
+            </label>
             <div class="settings-advanced" data-advanced hidden>
               <label class="advanced-switch"><input id="planToggle" type="checkbox"> Modalità piano (prossimo invio)</label>
               <fieldset class="permission-select">
@@ -108,7 +112,6 @@
         </div>
       </section>
       <div id="chatView" class="chat-view">
-        <div id="chatUsage" class="chat-usage-summary" aria-live="polite"></div>
         <main id="messages" class="messages"></main>
         <div id="attachmentPicker" class="attachment-picker" hidden>
           <div id="attachmentDropzone" class="attachment-dropzone" role="button" tabindex="0">
@@ -124,6 +127,7 @@
           <input id="attachmentInput" type="file" name="files" multiple hidden>
         </div>
         <div id="slashSuggestions" class="slash-suggestions" data-advanced hidden></div>
+        <div id="chatUsage" class="chat-usage-summary" aria-live="polite"></div>
         <form id="chatForm" class="input-bar">
           <button type="button" id="attachmentBtn" class="attachment-btn" aria-label="Allega file" aria-expanded="false">+</button>
           <textarea id="input" placeholder="Scrivi un messaggio..." rows="1" autofocus></textarea>

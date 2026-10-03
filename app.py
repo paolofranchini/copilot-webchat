@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import selectors
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -47,15 +48,10 @@ MAX_ATTACHMENTS_PER_MESSAGE = 5
 MAX_TEXT_ATTACHMENT_SIZE = 1 * 1024 * 1024
 UPLOAD_DIR = CONFIG_DIR / "webchat_uploads"
 SESSION_STATE_DIR = CONFIG_DIR / "session-state"
-WEBCHAT_SESSION_PREFIX = "webchat:"
 PERMISSION_FLAGS = {
     "shell": "--allow-tool=shell",
     "write": "--allow-tool=write",
     "all": "--allow-all",
-}
-DENY_PERMISSION_FLAGS = {
-    "shell": "--deny-tool=shell",
-    "write": "--deny-tool=write",
 }
 TOOL_PATTERN = re.compile(
     r"^(?:shell\([a-zA-Z0-9_./ :*-]{1,100}\)|"
@@ -94,7 +90,7 @@ def valid_permissions(permissions):
         return None
     if "all" in permissions:
         return ["all"]
-    return permissions
+    return ["shell", "write"] if permissions else []
 
 
 def valid_tool_permissions(tools):
@@ -190,18 +186,7 @@ def init_db():
                 title TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 permissions TEXT NOT NULL DEFAULT '[]',
-                model TEXT,
-                usage TEXT
-            )"""
-        )
-        db.execute(
-            """CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                model TEXT,
-                ts TEXT NOT NULL
+                model TEXT
             )"""
         )
         db.execute(
@@ -210,10 +195,6 @@ def init_db():
                 config_json TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
             )"""
         )
-        # Migrazione soft: aggiunge la colonna 'model' se il db esisteva già senza.
-        cols = [r[1] for r in db.execute("PRAGMA table_info(messages)").fetchall()]
-        if "model" not in cols:
-            db.execute("ALTER TABLE messages ADD COLUMN model TEXT")
         chat_cols = [r[1] for r in db.execute("PRAGMA table_info(chats)").fetchall()]
         if "permissions" not in chat_cols:
             db.execute(
@@ -221,27 +202,35 @@ def init_db():
             )
         if "model" not in chat_cols:
             db.execute("ALTER TABLE chats ADD COLUMN model TEXT")
-        if "usage" not in chat_cols:
-            db.execute("ALTER TABLE chats ADD COLUMN usage TEXT")
+        if "usage" in chat_cols:
+            db.execute("UPDATE chats SET usage = NULL")
         if "pending_plan" not in chat_cols:
             db.execute("ALTER TABLE chats ADD COLUMN pending_plan TEXT")
         if "mcp_servers" not in chat_cols:
             db.execute("ALTER TABLE chats ADD COLUMN mcp_servers TEXT NOT NULL DEFAULT '[]'")
         if "tool_permissions" not in chat_cols:
             db.execute("ALTER TABLE chats ADD COLUMN tool_permissions TEXT NOT NULL DEFAULT '[]'")
-        # Le chat gia' esistenti vengono fissate al primo modello usato.
+        db.execute("UPDATE chats SET title = 'Sessione Copilot'")
         db.execute(
-            """UPDATE chats
-               SET model = (
-                   SELECT model FROM messages
-                   WHERE messages.chat_id = chats.id
-                     AND messages.role = 'bot'
-                     AND messages.model IS NOT NULL
-                   ORDER BY messages.id ASC
-                   LIMIT 1
-               )
-               WHERE model IS NULL"""
+            "UPDATE chats SET pending_plan = '1' WHERE pending_plan IS NOT NULL"
         )
+        message_cols = [
+            row[1] for row in db.execute("PRAGMA table_info(messages)").fetchall()
+        ]
+        if "model" in message_cols:
+            db.execute(
+                """UPDATE chats
+                   SET model = (
+                       SELECT model FROM messages
+                       WHERE messages.chat_id = chats.id
+                         AND messages.role = 'bot'
+                         AND messages.model IS NOT NULL
+                       ORDER BY messages.id ASC
+                       LIMIT 1
+                   )
+                   WHERE model IS NULL"""
+            )
+        db.execute("DROP TABLE IF EXISTS messages")
 
 
 init_db()
@@ -294,12 +283,31 @@ def read_copilot_usage(path):
     return usage
 
 
-def store_chat_usage(db, chat_id, usage):
-    db.execute(
-        "UPDATE chats SET usage = ? WHERE id = ?",
-        (json.dumps(usage) if usage is not None else None, chat_id),
-    )
-    db.commit()
+def read_cli_usage(session_ids):
+    if not session_ids:
+        return {}
+    usage_db_path = CONFIG_DIR / "session-store.db"
+    uri = usage_db_path.as_uri() + "?mode=ro"
+    usage_by_session = {}
+    try:
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as usage_db:
+            for offset in range(0, len(session_ids), 900):
+                batch = session_ids[offset:offset + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = usage_db.execute(
+                    "SELECT session_id, SUM(total_nano_aiu) FROM assistant_usage_events "
+                    f"WHERE session_id IN ({placeholders}) GROUP BY session_id",
+                    batch,
+                )
+                for session_id, total_nano_aiu in rows:
+                    total_nano_aiu = nonnegative_number(total_nano_aiu)
+                    if total_nano_aiu is not None:
+                        usage_by_session[session_id] = {
+                            "ai_credits": total_nano_aiu / 1_000_000_000
+                        }
+    except sqlite3.Error as exc:
+        app.logger.warning("Utilizzo Copilot non leggibile dal database CLI: %s", exc)
+    return usage_by_session
 
 
 def read_session_metadata(path):
@@ -315,11 +323,125 @@ def read_session_metadata(path):
 
 
 def session_display_name(name):
-    return name.removeprefix(WEBCHAT_SESSION_PREFIX).strip()
+    return name.removeprefix("webchat:").strip()
+
+
+def read_native_chat(session_id, include_messages=True):
+    if not valid_session_id(session_id):
+        return None
+    session_dir = SESSION_STATE_DIR / session_id
+    if session_dir.resolve().parent != SESSION_STATE_DIR.resolve():
+        return None
+    events_path = session_dir / "events.jsonl"
+    if not events_path.is_file():
+        return None
+
+    metadata = read_session_metadata(session_dir)
+    name = metadata.get("name", "")
+
+    messages = []
+    first_user = None
+    first_model = None
+    last_message_at = None
+    try:
+        with events_path.open(encoding="utf-8") as events_file:
+            for line in events_file:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    app.logger.warning("Evento sessione non valido: %s", events_path)
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                event_data = event.get("data")
+                if not isinstance(event_data, dict):
+                    continue
+                role = (
+                    "user" if event.get("type") == "user.message"
+                    else "bot" if event.get("type") == "assistant.message"
+                    else None
+                )
+                content = event_data.get("content")
+                if not role or not isinstance(content, str) or not content.strip():
+                    continue
+                timestamp = event.get("timestamp") or ""
+                model = event_data.get("model") if role == "bot" else None
+                if timestamp:
+                    last_message_at = timestamp
+                if role == "user" and first_user is None:
+                    first_user = {
+                        "content": content,
+                        "ts": timestamp,
+                    }
+                if role == "bot" and first_model is None and isinstance(model, str):
+                    first_model = model
+                if include_messages:
+                    messages.append({
+                        "role": role,
+                        "content": content,
+                        "model": model,
+                        "ts": timestamp,
+                    })
+    except (OSError, UnicodeDecodeError) as exc:
+        app.logger.warning("Sessione non leggibile %s: %s", events_path, exc)
+        return None
+
+    if first_user is None:
+        return None
+    try:
+        modified_at = datetime.fromtimestamp(
+            events_path.stat().st_mtime, timezone.utc
+        ).isoformat()
+    except OSError as exc:
+        app.logger.warning("Impossibile leggere i metadati sessione %s: %s", events_path, exc)
+        return None
+    created_at = metadata.get("created_at") or first_user["ts"] or modified_at
+    display_name = session_display_name(name)
+    if not display_name or display_name == session_id:
+        display_name = first_user["content"][:60]
+    return {
+        "id": session_id,
+        "title": display_name[:120] or "Senza titolo",
+        "created_at": created_at,
+        "last_message_at": last_message_at or created_at,
+        "messages": messages,
+        "first_model": first_model,
+    }
+
+
+def native_sessions():
+    sessions = []
+    if not SESSION_STATE_DIR.exists():
+        return sessions
+    try:
+        session_dirs = list(SESSION_STATE_DIR.iterdir())
+    except OSError as exc:
+        app.logger.error("Impossibile leggere le sessioni Copilot: %s", exc)
+        raise
+    for session_dir in session_dirs:
+        if not session_dir.is_dir():
+            continue
+        chat = read_native_chat(session_dir.name, include_messages=False)
+        if chat:
+            sessions.append(chat)
+    sessions.sort(key=lambda chat: chat["created_at"], reverse=True)
+    return sessions
+
+
+def ensure_chat_import(db, chat):
+    db.execute(
+        "INSERT OR IGNORE INTO chats (id, title, created_at) VALUES (?, ?, ?)",
+        (chat["id"], "Sessione Copilot", chat["created_at"]),
+    )
+    if chat["first_model"]:
+        db.execute(
+            "UPDATE chats SET model = COALESCE(model, ?) WHERE id = ?",
+            (chat["first_model"], chat["id"]),
+        )
 
 
 def write_session_name(session_id, title):
-    if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
+    if not valid_session_id(session_id):
         return
     path = SESSION_STATE_DIR / session_id / "workspace.yaml"
     if not path.is_file():
@@ -327,92 +449,34 @@ def write_session_name(session_id, title):
     lines = path.read_text().splitlines()
     for index, line in enumerate(lines):
         if line.startswith("name:"):
-            lines[index] = f"name: {WEBCHAT_SESSION_PREFIX}{title}"
+            lines[index] = f"name: {title}"
             path.write_text("\n".join(lines) + "\n")
             return
     path.write_text(
-        "\n".join([f"name: {WEBCHAT_SESSION_PREFIX}{title}", *lines]) + "\n"
+        "\n".join([f"name: {title}", *lines]) + "\n"
     )
 
 
-def rebuild_chat_database(db):
-    chats = []
-    if SESSION_STATE_DIR.exists():
-        for session_dir in SESSION_STATE_DIR.iterdir():
-            if not session_dir.is_dir() or not re.fullmatch(
-                r"[0-9a-f-]{36}", session_dir.name
-            ):
-                continue
-            events_path = session_dir / "events.jsonl"
-            if not events_path.is_file():
-                continue
-            metadata = read_session_metadata(session_dir)
-            if not metadata.get("name", "").startswith(WEBCHAT_SESSION_PREFIX):
-                continue
-            messages = []
-            try:
-                for line in events_path.read_text().splitlines():
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        app.logger.warning("Evento sessione non valido: %s", events_path)
-                        continue
-                    event_data = event.get("data", {})
-                    if not isinstance(event_data, dict):
-                        continue
-                    role = (
-                        "user" if event.get("type") == "user.message"
-                        else "bot" if event.get("type") == "assistant.message"
-                        else None
-                    )
-                    content = event_data.get("content")
-                    if role and isinstance(content, str) and content.strip():
-                        messages.append({
-                            "role": role,
-                            "content": content,
-                            "model": event_data.get("model") if role == "bot" else None,
-                            "ts": event.get("timestamp") or "",
-                        })
-            except (OSError, UnicodeDecodeError) as exc:
-                app.logger.warning("Sessione non leggibile %s: %s", events_path, exc)
-                continue
-            if not any(message["role"] == "user" for message in messages):
-                continue
-            first_user = next(message for message in messages if message["role"] == "user")
-            title = session_display_name(metadata["name"]) or first_user["content"][:60]
-            created_at = (
-                metadata.get("created_at")
-                or first_user["ts"]
-                or datetime.fromtimestamp(
-                    events_path.stat().st_mtime, timezone.utc
-                ).isoformat()
-            )
-            chats.append((session_dir.name, title[:120], created_at, messages))
+def valid_session_id(session_id):
+    try:
+        return str(uuid.UUID(session_id)) == session_id
+    except (AttributeError, TypeError, ValueError):
+        return False
 
-    db.execute("DELETE FROM messages")
-    db.execute("DELETE FROM chats")
-    for chat_id, title, created_at, messages in chats:
-        db.execute(
-            "INSERT INTO chats (id, title, created_at, permissions) VALUES (?, ?, ?, '[]')",
-            (chat_id, title or "Senza titolo", created_at),
-        )
-        for message in messages:
-            db.execute(
-                "INSERT INTO messages (chat_id, role, content, model, ts) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (chat_id, message["role"], message["content"],
-                 message["model"], message["ts"] or created_at),
-            )
-        first_model = next(
-            (message["model"] for message in messages
-             if message["role"] == "bot" and message["model"]),
-            None,
-        )
-        if first_model:
-            db.execute("UPDATE chats SET model = ? WHERE id = ?",
-                       (first_model, chat_id))
-    db.commit()
-    return len(chats)
+
+def session_is_running(session_dir):
+    for marker in session_dir.glob("inuse.*.lock"):
+        match = re.fullmatch(r"inuse\.(\d+)\.lock", marker.name)
+        if not match:
+            continue
+        try:
+            os.kill(int(match.group(1)), 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            return True
+        return True
+    return False
 
 
 class CopilotRunError(RuntimeError):
@@ -454,20 +518,19 @@ def run_copilot(
     prompt = prompt.replace("\x00", "\\0")
     args = [COPILOT_BIN]
     if is_new:
-        args += [
-            "--session-id", copilot_session_id,
-            "--name", f"{WEBCHAT_SESSION_PREFIX}{copilot_session_id}",
-        ]
+        args += ["--session-id", copilot_session_id]
     else:
         args += ["--resume", copilot_session_id]
     args += ["--model", model]
     permissions = permissions or []
-    for permission in permissions:
-        args.append(PERMISSION_FLAGS[permission])
-    if "all" not in permissions:
-        for permission, flag in DENY_PERMISSION_FLAGS.items():
-            if permission not in permissions:
-                args.append(flag)
+    if "all" in permissions:
+        args.extend([PERMISSION_FLAGS["all"], "--mode", "interactive"])
+    elif permissions:
+        permissions = ["shell", "write"]
+        for permission in permissions:
+            args.append(PERMISSION_FLAGS[permission])
+    else:
+        args.extend(["--available-tools", "--disable-builtin-mcps"])
     for attachment in attachments or []:
         args += ["--attachment", str(attachment)]
 
@@ -527,24 +590,22 @@ def advanced_args(chat_id, is_new, model, permissions, attachments, tools, serve
     args = [COPILOT_BIN]
     args += ["--session-id" if is_new else "--resume", chat_id, "--model", model,
              "--no-ask-user"]
-    if is_new:
-        args += ["--name", f"{WEBCHAT_SESSION_PREFIX}{chat_id}"]
     if plan:
         args += ["--plan", "--deny-tool=shell", "--deny-tool=write", "--deny-tool=url",
                  "--disable-builtin-mcps"]
+        if not permissions:
+            args.append("--available-tools")
     else:
-        if is_approval:
-            args += ["--mode", "interactive"]
-        for permission in permissions:
-            args.append(PERMISSION_FLAGS[permission])
-        if "all" not in permissions:
-            for permission, flag in DENY_PERMISSION_FLAGS.items():
-                if permission not in permissions and not any(
-                    tool.startswith(permission + "(") for tool in tools
-                ):
-                    args.append(flag)
+        if "all" in permissions:
+            args += [PERMISSION_FLAGS["all"], "--mode", "interactive"]
+        elif permissions:
+            permissions = ["shell", "write"]
+            for permission in permissions:
+                args.append(PERMISSION_FLAGS[permission])
             args.extend(f"--allow-tool={tool}" for tool in tools)
-        if servers:
+        else:
+            args += ["--available-tools", "--disable-builtin-mcps"]
+        if servers and permissions:
             config_fd, config_path = tempfile.mkstemp(
                 prefix="webchat-mcp-", suffix=".json", dir=CONFIG_DIR
             )
@@ -557,6 +618,8 @@ def advanced_args(chat_id, is_new, model, permissions, attachments, tools, serve
                 Path(config_path).unlink(missing_ok=True)
                 raise
             args += ["--additional-mcp-config", f"@{config_path}"]
+        if is_approval and "all" not in permissions:
+            args += ["--mode", "interactive"]
     for attachment in attachments:
         args += ["--attachment", str(attachment)]
     return args
@@ -637,16 +700,12 @@ def run_copilot_stream(args, prompt, chat_id, model, plan, attachments, is_appro
                 raise CopilotRunError("nessuna risposta ricevuta da copilot", usage)
             reply = reply.strip()
             bot_ts = datetime.now(timezone.utc).isoformat()
-            role = "plan" if plan else "bot"
-            db.execute(
-                "INSERT INTO messages (chat_id, role, content, model, ts) VALUES (?, ?, ?, ?, ?)",
-                (chat_id, role, reply, used_model, bot_ts),
-            )
             if plan:
                 model_to_pin = used_model or (model if model != "auto" else None)
                 db.execute(
-                    "UPDATE chats SET pending_plan = ?, model = COALESCE(model, ?) WHERE id = ?",
-                    (reply, model_to_pin, chat_id),
+                    "UPDATE chats SET pending_plan = '1', model = COALESCE(model, ?) "
+                    "WHERE id = ?",
+                    (model_to_pin, chat_id),
                 )
             else:
                 model_to_pin = used_model or (model if model != "auto" else None)
@@ -655,7 +714,6 @@ def run_copilot_stream(args, prompt, chat_id, model, plan, attachments, is_appro
                                (model_to_pin, chat_id))
                 if is_approval:
                     db.execute("UPDATE chats SET pending_plan = NULL WHERE id = ?", (chat_id,))
-            store_chat_usage(db, chat_id, usage)
             yield sse({"type": "done", "reply": reply, "model": used_model,
                        "usage": usage, "chat_id": chat_id, "ts": bot_ts,
                        "pending_plan": plan})
@@ -663,7 +721,6 @@ def run_copilot_stream(args, prompt, chat_id, model, plan, attachments, is_appro
         if not isinstance(exc, CopilotRunError):
             app.logger.error("Impossibile eseguire Copilot: %s", exc)
         usage = exc.usage if isinstance(exc, CopilotRunError) else None
-        store_chat_usage(db, chat_id, usage)
         yield sse({"type": "error",
                    "error": str(exc) if isinstance(exc, CopilotRunError)
                    else "impossibile eseguire Copilot",
@@ -738,52 +795,54 @@ def logout():
 @app.route("/api/chats", methods=["GET"])
 def list_chats():
     db = get_db()
-    rows = db.execute(
-        "SELECT id, title, created_at, permissions, model, usage, pending_plan, "
-        "mcp_servers, tool_permissions FROM chats "
-        "ORDER BY created_at DESC LIMIT 50"
-    ).fetchall()
+    native_chats = native_sessions()
+    usage_by_session = read_cli_usage([chat["id"] for chat in native_chats])
     chats = []
-    for row in rows:
-        chat = dict(row)
-        chat["title"] = session_display_name(chat["title"])
-        chat["permissions"] = json.loads(chat["permissions"])
-        chat["usage"] = json.loads(chat["usage"]) if chat["usage"] else None
-        chat["pending_plan"] = bool(chat["pending_plan"])
-        chat["mcp_servers"] = json.loads(chat["mcp_servers"])
-        chat["tool_permissions"] = json.loads(chat["tool_permissions"])
-        chats.append(chat)
+    for native_chat in native_chats:
+        ensure_chat_import(db, native_chat)
+        row = db.execute(
+            "SELECT permissions, model, pending_plan, mcp_servers, "
+            "tool_permissions FROM chats WHERE id = ?",
+            (native_chat["id"],),
+        ).fetchone()
+        chats.append({
+            "id": native_chat["id"],
+            "title": native_chat["title"],
+            "created_at": native_chat["created_at"],
+            "last_message_at": native_chat["last_message_at"],
+            "permissions": json.loads(row["permissions"]),
+            "model": row["model"],
+            "usage": usage_by_session.get(native_chat["id"]),
+            "pending_plan": bool(row["pending_plan"]),
+            "mcp_servers": json.loads(row["mcp_servers"]),
+            "tool_permissions": json.loads(row["tool_permissions"]),
+        })
+    db.commit()
     return jsonify(chats)
-
-
-@app.route("/api/chats/rebuild", methods=["POST"])
-def rebuild_chats():
-    try:
-        count = rebuild_chat_database(get_db())
-    except (OSError, sqlite3.Error) as exc:
-        get_db().rollback()
-        app.logger.error("Impossibile aggiornare il database chat: %s", exc)
-        return jsonify({"error": "impossibile aggiornare il database chat"}), 500
-    session.pop("copilot_session_id", None)
-    return jsonify({"ok": True, "count": count})
 
 
 @app.route("/api/chats/<chat_id>", methods=["GET"])
 def get_chat(chat_id):
+    native_chat = read_native_chat(chat_id)
+    if native_chat is None:
+        return jsonify({"error": "chat non trovata"}), 404
     db = get_db()
-    rows = db.execute(
-        "SELECT role, content, model, ts FROM messages WHERE chat_id = ? ORDER BY ts ASC, id ASC",
-        (chat_id,),
-    ).fetchall()
-    first_model = next((row["model"] for row in rows if row["role"] == "bot" and row["model"]), None)
-    if first_model:
-        db.execute(
-            "UPDATE chats SET model = COALESCE(model, ?) WHERE id = ?",
-            (first_model, chat_id),
+    ensure_chat_import(db, native_chat)
+    chat_row = db.execute(
+        "SELECT pending_plan FROM chats WHERE id = ?", (chat_id,)
+    ).fetchone()
+    messages = native_chat["messages"]
+    if chat_row["pending_plan"]:
+        last_bot = next(
+            (index for index in range(len(messages) - 1, -1, -1)
+             if messages[index]["role"] == "bot"),
+            None,
         )
-        db.commit()
+        if last_bot is not None:
+            messages[last_bot]["role"] = "plan"
+    db.commit()
     session["copilot_session_id"] = chat_id
-    return jsonify([dict(r) for r in rows])
+    return jsonify(messages)
 
 
 @app.route("/api/chats/<chat_id>/permissions", methods=["PUT"])
@@ -811,44 +870,36 @@ def update_chat_title(chat_id):
         return jsonify({"error": "titolo chat vuoto"}), 400
     if len(title) > 120:
         return jsonify({"error": "titolo chat troppo lungo (massimo 120 caratteri)"}), 400
-    db = get_db()
-    result = db.execute(
-        "UPDATE chats SET title = ? WHERE id = ?",
-        (title, chat_id),
-    )
-    if result.rowcount == 0:
+    native_chat = read_native_chat(chat_id, include_messages=False)
+    if native_chat is None:
         return jsonify({"error": "chat non trovata"}), 404
     try:
         write_session_name(chat_id, title)
     except (OSError, UnicodeDecodeError) as exc:
-        db.rollback()
         app.logger.error("Impossibile aggiornare il nome della sessione: %s", exc)
         return jsonify({"error": "impossibile aggiornare il nome della sessione"}), 500
+    db = get_db()
+    ensure_chat_import(db, native_chat)
     db.commit()
     return jsonify({"ok": True, "title": title})
 
 
 @app.route("/api/chats/<chat_id>", methods=["DELETE"])
 def delete_chat(chat_id):
-    db = get_db()
-    row = db.execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone()
-    if row is None:
+    native_chat = read_native_chat(chat_id, include_messages=False)
+    if native_chat is None:
         return jsonify({"error": "chat non trovata"}), 404
+    db = get_db()
+    session_path = SESSION_STATE_DIR / chat_id
     try:
-        session_path = SESSION_STATE_DIR / chat_id / "workspace.yaml"
-        if session_path.is_file():
-            lines = session_path.read_text().splitlines()
-            for index, line in enumerate(lines):
-                if line.startswith("name:"):
-                    name = line.partition(":")[2].strip()
-                    if name.startswith(WEBCHAT_SESSION_PREFIX):
-                        lines[index] = f"name: {session_display_name(name)}"
-                        session_path.write_text("\n".join(lines) + "\n")
-                    break
-    except (OSError, UnicodeDecodeError) as exc:
-        app.logger.error("Impossibile scollegare la sessione Copilot: %s", exc)
-        return jsonify({"error": "impossibile eliminare la chat"}), 500
-    db.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+        if session_path.resolve().parent != SESSION_STATE_DIR.resolve():
+            return jsonify({"error": "percorso sessione non valido"}), 400
+        if session_is_running(session_path):
+            return jsonify({"error": "sessione Copilot in uso"}), 409
+        shutil.rmtree(session_path)
+    except OSError as exc:
+        app.logger.error("Impossibile eliminare la sessione Copilot %s: %s", chat_id, exc)
+        return jsonify({"error": "impossibile eliminare la sessione Copilot"}), 500
     db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
     db.commit()
     if session.get("copilot_session_id") == chat_id:
@@ -1053,7 +1104,7 @@ def chat_stream():
         requested_tools = json.loads(row["tool_permissions"])
     now = datetime.now(timezone.utc).isoformat()
     db.execute("INSERT OR IGNORE INTO chats (id, title, created_at, permissions) VALUES (?, ?, ?, ?)",
-               (chat_id, message[:60] or "File allegato", now, json.dumps(permissions)))
+               (chat_id, "Sessione Copilot", now, json.dumps(permissions)))
     db.execute("UPDATE chats SET permissions = ?, mcp_servers = ?, tool_permissions = ? WHERE id = ?",
                (json.dumps(permissions), json.dumps(selected_servers),
                 json.dumps(requested_tools), chat_id))
@@ -1067,19 +1118,13 @@ def chat_stream():
             path.unlink(missing_ok=True)
         app.logger.error("Impossibile preparare Copilot: %s", exc)
         return jsonify({"error": "impossibile preparare Copilot"}), 500
-    stored_message = (f"{message}\n\n[Allegati {len(attachments)} file]"
-                      if attachments and message else
-                      f"[Allegati {len(attachments)} file]" if attachments else message)
-    db.execute("INSERT INTO messages (chat_id, role, content, ts) VALUES (?, 'user', ?, ?)",
-               (chat_id, stored_message, now))
     db.commit()
     prompt = message or "Analizza i file allegati."
     prompt += "".join(text_attachments)
     if plan:
         prompt += "\n\nPrepara solo un piano; non modificare file e non eseguire comandi."
     def stream_with_chat():
-        # La chat e' gia' stata committata insieme al primo messaggio: rendila
-        # visibile subito nella sidebar, senza attendere la risposta di Copilot.
+        # I metadati sono persistiti; il contenuto apparirà dalla sessione nativa.
         yield sse({"type": "chat_created", "chat_id": chat_id,
                    "title": message[:60] or "File allegato"})
         yield from run_copilot_stream(
@@ -1109,9 +1154,6 @@ def approve_plan():
     args = advanced_args(chat_id, False, model, json.loads(row["permissions"]), [],
                          json.loads(row["tool_permissions"]),
                          selected_mcp_servers(db, chat_id), False, is_approval=True)
-    db.execute("INSERT INTO messages (chat_id, role, content, ts) VALUES (?, 'user', ?, ?)",
-               (chat_id, prompt, now))
-    db.commit()
     outcome = None
     for event in run_copilot_stream(args, prompt, chat_id, model, False, [], is_approval=True):
         if not event.startswith("data: "):
@@ -1146,8 +1188,8 @@ def cancel_plan():
 @app.route("/api/command", methods=["POST"])
 def command():
     data = request.get_json(silent=True) or {}
-    if (error := require_advanced(data)):
-        return error
+    if not isinstance(data, dict):
+        return jsonify({"error": "comando non valido"}), 400
     text = data.get("command")
     if not isinstance(text, str):
         return jsonify({"error": "comando non valido"}), 400
@@ -1156,22 +1198,24 @@ def command():
         return jsonify({"error": "comando non valido"}), 400
     db = get_db()
     chat_id = session.get("copilot_session_id")
-    if parts[0] == "/help" and len(parts) == 1:
-        return jsonify({"reply": "Comandi disponibili: /help, /usage, /model <modello>"})
-    if parts[0] == "/usage" and len(parts) == 1:
-        row = (db.execute("SELECT usage FROM chats WHERE id = ?", (chat_id,)).fetchone()
-               if chat_id else None)
-        usage = json.loads(row["usage"]) if row and row["usage"] else None
-        return jsonify({"reply": "Utilizzo non disponibile" if usage is None else
-                        "Utilizzo corrente della chat", "usage": usage})
     if parts[0] == "/model" and len(parts) == 2:
         model = parts[1].strip()
         if not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
             return jsonify({"error": "modello non valido"}), 400
         if chat_id:
-            db.execute("UPDATE chats SET model = ? WHERE id = ?", (model, chat_id))
+            result = db.execute("UPDATE chats SET model = ? WHERE id = ?", (model, chat_id))
+            if not result.rowcount:
+                return jsonify({"error": "chat non trovata"}), 404
             db.commit()
         return jsonify({"reply": f"Modello impostato: {model}", "model": model})
+    if (error := require_advanced(data)):
+        return error
+    if parts[0] == "/help" and len(parts) == 1:
+        return jsonify({"reply": "Comandi disponibili: /help, /usage, /model <modello>"})
+    if parts[0] == "/usage" and len(parts) == 1:
+        usage = read_cli_usage([chat_id]).get(chat_id) if chat_id else None
+        return jsonify({"reply": "Utilizzo non disponibile" if usage is None else
+                        "Utilizzo corrente della chat", "usage": usage})
     return jsonify({"error": "comando non supportato"}), 400
 
 
@@ -1221,17 +1265,7 @@ def chat():
 
     db = get_db()
     now = datetime.now(timezone.utc).isoformat()
-    # INSERT OR IGNORE si autoripara: se il cookie di sessione punta a un
-    # copilot_session_id che non esiste piu' nella tabella chats (es. dopo
-    # un reset del db), la chat viene ricreata invece di restare orfana.
-    stored_message = message
-    if attachments:
-        stored_message = (
-            f"{message}\n\n[Allegati {len(attachments)} file]"
-            if message
-            else f"[Allegati {len(attachments)} file]"
-        )
-    title = message[:60] or "File allegato"
+    title = "Sessione Copilot"
     db.execute(
         "INSERT OR IGNORE INTO chats (id, title, created_at, permissions, model) "
         "VALUES (?, ?, ?, ?, NULL)",
@@ -1246,10 +1280,6 @@ def chat():
     ).fetchone()
     pinned_model = chat_row["model"] if chat_row else None
     model = pinned_model or model
-    db.execute(
-        "INSERT INTO messages (chat_id, role, content, ts) VALUES (?, 'user', ?, ?)",
-        (copilot_session_id, stored_message, now),
-    )
     db.commit()
 
     try:
@@ -1265,7 +1295,6 @@ def chat():
             copilot_attachments,
         )
     except CopilotRunError as exc:
-        store_chat_usage(db, copilot_session_id, exc.usage)
         return jsonify(
             {
                 "error": str(exc),
@@ -1275,7 +1304,6 @@ def chat():
         ), exc.status_code
     except (OSError, subprocess.SubprocessError) as exc:
         app.logger.error("Impossibile eseguire Copilot: %s", exc)
-        store_chat_usage(db, copilot_session_id, None)
         return jsonify(
             {
                 "error": "impossibile eseguire Copilot",
@@ -1287,23 +1315,12 @@ def chat():
             attachment.unlink(missing_ok=True)
 
     bot_ts = datetime.now(timezone.utc).isoformat()
-    db.execute(
-        "INSERT INTO messages (chat_id, role, content, model, ts) VALUES (?, 'bot', ?, ?, ?)",
-        (copilot_session_id, reply, used_model, bot_ts),
-    )
     model_to_pin = used_model or (model if model != "auto" else None)
     if model_to_pin:
         db.execute(
             "UPDATE chats SET model = COALESCE(model, ?) WHERE id = ?",
             (model_to_pin, copilot_session_id),
         )
-    db.execute(
-        "UPDATE chats SET usage = ? WHERE id = ?",
-        (
-            json.dumps(usage) if usage is not None else None,
-            copilot_session_id,
-        ),
-    )
     db.commit()
 
     return jsonify(

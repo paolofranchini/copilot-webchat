@@ -15,7 +15,7 @@ const closeSidebarBtn = document.getElementById("closeSidebarBtn");
 const modelSelect = document.getElementById("modelSelect");
 const settingsModelSelect = document.getElementById("settingsModelSelect");
 const chatUsageEl = document.getElementById("chatUsage");
-const permissionInputs = document.querySelectorAll("[data-permission]");
+const permissionModeSelects = document.querySelectorAll("[data-permission-mode]");
 const attachmentBtn = document.getElementById("attachmentBtn");
 const attachmentPicker = document.getElementById("attachmentPicker");
 const attachmentInput = document.getElementById("attachmentInput");
@@ -30,7 +30,6 @@ const mcpConfigList = document.getElementById("mcpConfigList");
 const skillsList = document.getElementById("skillsList");
 const slashSuggestions = document.getElementById("slashSuggestions");
 const dictationStatus = document.getElementById("dictationStatus");
-const rebuildChatsBtn = document.getElementById("rebuildChatsBtn");
 
 let currentChatId = null;
 let attachedFiles = [];
@@ -41,6 +40,7 @@ let pendingPlan = false;
 const chatPermissions = new Map();
 const chatUsages = new Map();
 const chatPlans = new Map();
+const chatModels = new Map();
 const chatMcpServers = new Map();
 const chatTools = new Map();
 const mobileLayout = window.matchMedia("(max-width: 700px)");
@@ -101,15 +101,56 @@ function syncSidebarWithViewport() {
 syncSidebarWithViewport();
 mobileLayout.addEventListener("change", syncSidebarWithViewport);
 
-const savedModel = localStorage.getItem("copilot-model");
-modelSelect.value = savedModel || "auto";
-settingsModelSelect.value = modelSelect.value;
+function setModelControls(model, isChat = Boolean(currentChatId)) {
+  for (const select of [modelSelect, settingsModelSelect]) {
+    if (![...select.options].some((option) => option.value === model)) {
+      const option = document.createElement("option");
+      option.value = model;
+      option.textContent = model;
+      select.append(option);
+    }
+    select.value = model;
+  }
+  document.querySelectorAll("[data-model-label]").forEach((label) => {
+    label.textContent = isChat ? "Modello chat" : "Modello nuova chat";
+  });
+}
+
+const savedModel = localStorage.getItem("copilot-model") || "auto";
+setModelControls(savedModel, false);
 localStorage.setItem("copilot-model", modelSelect.value);
+let modelUpdating = false;
 for (const select of [modelSelect, settingsModelSelect]) {
-  select.addEventListener("change", () => {
-    modelSelect.value = select.value;
-    settingsModelSelect.value = select.value;
-    localStorage.setItem("copilot-model", select.value);
+  select.addEventListener("change", async () => {
+    if (modelUpdating) return;
+    const previousDefault = localStorage.getItem("copilot-model") || "auto";
+    const previousSelection = modelSelect.value;
+    const model = select.value;
+    setModelControls(model);
+    localStorage.setItem("copilot-model", model);
+    if (!currentChatId) return;
+
+    const chatId = currentChatId;
+    modelUpdating = true;
+    for (const control of [modelSelect, settingsModelSelect]) control.disabled = true;
+    try {
+      const data = await jsonRequest("/api/command", "POST", {
+        command: `/model ${model}`,
+      });
+      chatModels.set(chatId, data.model);
+      showNotice(data.reply);
+      loadChatList();
+    } catch (err) {
+      const activeModel = currentChatId === chatId
+        ? chatModels.get(chatId) || previousSelection
+        : currentChatId ? chatModels.get(currentChatId) || modelSelect.value : previousDefault;
+      setModelControls(activeModel, Boolean(currentChatId));
+      localStorage.setItem("copilot-model", previousDefault);
+      showNotice(err.message);
+    } finally {
+      modelUpdating = false;
+      for (const control of [modelSelect, settingsModelSelect]) control.disabled = false;
+    }
   });
 }
 
@@ -133,26 +174,25 @@ settingsBtn.addEventListener("click", () => {
 });
 
 function selectedPermissions() {
-  return [...new Set([...permissionInputs]
-    .filter((input) => input.checked && ["shell", "write", "all"].includes(input.dataset.permission))
-    .map((input) => input.dataset.permission))];
+  const mode = permissionModeSelects[0]?.value || "ask";
+  if (mode === "agent") return ["all"];
+  if (mode === "edit") return ["shell", "write"];
+  return [];
 }
 
 function syncPermissions(permissions) {
-  permissionInputs.forEach((input) => {
-    input.checked = permissions.includes(input.dataset.permission);
-  });
+  const mode = permissions.includes("all")
+    ? "agent"
+    : permissions.includes("shell") || permissions.includes("write") ? "edit" : "ask";
+  permissionModeSelects.forEach((select) => { select.value = mode; });
 }
 
-permissionInputs.forEach((input) => {
-  input.addEventListener("change", async () => {
+permissionModeSelects.forEach((select) => {
+  select.addEventListener("change", async () => {
     const previous = currentChatId ? (chatPermissions.get(currentChatId) || []) : null;
-    const group = [...input.closest("fieldset").querySelectorAll("[data-permission]")];
-    const permissions = input.dataset.permission === "all" && input.checked
-      ? ["all"]
-      : [...new Set(group
-        .filter((other) => other.dataset.permission !== "all" && other.checked)
-        .map((other) => other.dataset.permission))];
+    const mode = select.value;
+    const permissions = mode === "agent" ? ["all"]
+      : mode === "edit" ? ["shell", "write"] : [];
     syncPermissions(permissions);
     if (currentChatId) {
       try {
@@ -310,7 +350,10 @@ function addMessage(text, cls, model, ts) {
 
 function formatChatUsage(usage) {
   if (!usage) return null;
-  const numberFormat = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 9 });
+  const numberFormat = new Intl.NumberFormat("it-IT", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
   if (Number.isFinite(usage.ai_credits)) {
     return `${numberFormat.format(usage.ai_credits)} crediti AI`;
   }
@@ -320,15 +363,25 @@ function formatChatUsage(usage) {
   return null;
 }
 
+function formatChatTimestamp(timestamp) {
+  const date = timestamp ? new Date(timestamp) : null;
+  if (!date || Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("it-IT", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function renderChatUsage() {
   if (!currentChatId) {
     chatUsageEl.textContent = "";
     return;
   }
   const usage = formatChatUsage(chatUsages.get(currentChatId));
-  chatUsageEl.textContent = usage
-    ? `Utilizzo chat: ${usage}`
-    : "Utilizzo crediti non disponibile";
+  chatUsageEl.textContent = usage ? `✦ ${usage}` : "";
 }
 
 function autoResize() {
@@ -596,26 +649,6 @@ document.getElementById("saveToolPermissions").addEventListener("click", async (
   }
 });
 
-rebuildChatsBtn.addEventListener("click", async () => {
-  if (!window.confirm("Ricostruire il database usando le sessioni della webchat?")) return;
-  rebuildChatsBtn.disabled = true;
-  showNotice("Aggiornamento del database chat in corso...");
-  try {
-    const data = await jsonRequest("/api/chats/rebuild", "POST", {});
-    currentChatId = null;
-    pendingPlan = false;
-    messagesEl.innerHTML = "";
-    renderChatUsage();
-    settingsChatName.textContent = "nuova";
-    await loadChatList();
-    showNotice(`Database chat aggiornato: ${data.count} chat ricostruite`);
-  } catch (err) {
-    showNotice(err.message);
-  } finally {
-    rebuildChatsBtn.disabled = false;
-  }
-});
-
 document.getElementById("screenshotBtn").addEventListener("click", async () => {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     showNotice("Cattura schermo non supportata dal browser");
@@ -678,9 +711,15 @@ async function loadChatList() {
   if (res.status === 401) { window.location.href = "/login.html"; return; }
   if (!res.ok) return;
   const chats = await res.json();
+  for (const chat of chats) chatModels.set(chat.id, chat.model);
+  if (currentChatId) {
+    setModelControls(chatModels.get(currentChatId) || modelSelect.value, true);
+  }
   settingsChatName.textContent = currentChatId
     ? (chats.find((chat) => chat.id === currentChatId)?.title || "selezionata")
     : "nuova";
+  for (const chat of chats) chatUsages.set(chat.id, chat.usage);
+  renderChatUsage();
   chatListEl.innerHTML = "";
   for (const c of chats) {
     chatPermissions.set(c.id, c.permissions || []);
@@ -696,12 +735,14 @@ async function loadChatList() {
     title.className = "chat-title";
     title.textContent = c.title || "(senza titolo)";
     titleWrap.appendChild(title);
+    const timestamp = formatChatTimestamp(c.last_message_at);
     const usage = formatChatUsage(c.usage);
-    if (usage) {
-      const usageLabel = document.createElement("span");
-      usageLabel.className = "chat-usage";
-      usageLabel.textContent = usage;
-      titleWrap.appendChild(usageLabel);
+    const metadataText = [timestamp, usage].filter(Boolean).join(" · ");
+    if (metadataText) {
+      const metadata = document.createElement("span");
+      metadata.className = "chat-metadata";
+      metadata.textContent = metadataText;
+      titleWrap.appendChild(metadata);
     }
     const deleteBtn = document.createElement("button");
     const renameBtn = document.createElement("button");
@@ -747,11 +788,16 @@ async function renameChat(chatId, currentTitle) {
 }
 
 async function deleteChat(chatId) {
-  if (!window.confirm("Eliminare questa chat?")) return;
+  if (!window.confirm("Eliminare definitivamente questa sessione Copilot e tutta la sua cronologia?")) return;
   const res = await fetch(`/api/chats/${chatId}`, { method: "DELETE" });
-  if (!res.ok) return;
+  if (!res.ok) {
+    const data = await readApiResponse(res);
+    showNotice(data.error || "Impossibile eliminare la sessione");
+    return;
+  }
   if (currentChatId === chatId) {
     currentChatId = null;
+    setModelControls(localStorage.getItem("copilot-model") || "auto", false);
     syncToolControls();
     pendingPlan = false;
     selectedMcpServers = [];
@@ -763,6 +809,7 @@ async function deleteChat(chatId) {
   }
   chatUsages.delete(chatId);
   chatPlans.delete(chatId);
+  chatModels.delete(chatId);
   chatMcpServers.delete(chatId);
   chatTools.delete(chatId);
   loadChatList();
@@ -775,6 +822,7 @@ async function openChat(chatId) {
   if (!res.ok) return;
   const msgs = await res.json();
   currentChatId = chatId;
+  setModelControls(chatModels.get(chatId) || localStorage.getItem("copilot-model") || "auto", true);
   showSettings(false);
   syncToolControls();
   pendingPlan = chatPlans.get(chatId) || false;
@@ -868,6 +916,8 @@ async function streamChat(formData, pending, activity) {
     const event = JSON.parse(payload);
     if (event.type === "chat_created") {
       currentChatId = event.chat_id;
+      chatModels.set(currentChatId, modelSelect.value);
+      setModelControls(modelSelect.value, true);
       syncToolControls();
       chatPermissions.set(currentChatId, selectedPermissions());
       chatPlans.set(currentChatId, false);
@@ -921,12 +971,10 @@ async function sendCommand(text) {
   const command = text.match(/^\/(help|usage)(?:\s*)$/i) || text.match(/^\/model\s+(\S+)\s*$/i);
   if (!command) return false;
   const data = await jsonRequest("/api/command", "POST", { command: text, advanced: true });
-  if (text.toLowerCase().startsWith("/model ")) {
-    const model = text.split(/\s+/)[1];
-    if (model && [...modelSelect.options].some((option) => option.value === model)) {
-      modelSelect.value = model;
-      localStorage.setItem("copilot-model", model);
-    }
+  if (data.model) {
+    setModelControls(data.model);
+    localStorage.setItem("copilot-model", data.model);
+    if (currentChatId) chatModels.set(currentChatId, data.model);
   }
   if (data.usage && currentChatId) chatUsages.set(currentChatId, data.usage);
   renderChatUsage();
@@ -955,11 +1003,8 @@ async function submitChat(e) {
   const isCommand = advanced && attachedFiles.length === 0
     && (/^\/(help|usage)\s*$/i.test(text) || /^\/model\s+\S+\s*$/i.test(text));
   addMessage(text || `[Allegati ${attachedFiles.length} file]`, "user", null, new Date().toISOString());
-  // Il messaggio viene svuotato subito: a questo punto il testo è già stato
-  // "consumato" per la richiesta e, lato server, viene salvato nella cronologia
-  // prima ancora di invocare Copilot, quindi non deve restare bloccato nella
-  // textbox anche se la richiesta fallisce o lo streaming si interrompe
-  // (es. tab in background/schermo bloccato su mobile).
+  // Il testo è già stato acquisito per la richiesta; svuota il campo anche se
+  // la risposta fallisce o lo streaming si interrompe.
   input.value = "";
   autoResize();
   const submittedFiles = attachedFiles;
@@ -1002,6 +1047,8 @@ async function submitChat(e) {
     pending.remove();
     if (data.chat_id) {
       currentChatId = data.chat_id;
+      chatModels.set(currentChatId, data.model || modelSelect.value);
+      setModelControls(data.model || modelSelect.value, true);
       syncToolControls();
       chatUsages.set(currentChatId, data.usage);
       chatPermissions.set(currentChatId, selectedPermissions());
@@ -1029,6 +1076,7 @@ async function submitChat(e) {
     // sarebbe fuorviante (l'invio è comunque avvenuto).
     if (err.chat_id) {
       currentChatId = err.chat_id;
+      setModelControls(chatModels.get(currentChatId) || modelSelect.value, true);
       syncToolControls();
       if (err.usage) chatUsages.set(currentChatId, err.usage);
       renderChatUsage();
@@ -1076,6 +1124,7 @@ newChatBtn.addEventListener("click", async () => {
     return;
   }
   currentChatId = null;
+  setModelControls(localStorage.getItem("copilot-model") || "auto", false);
   settingsChatName.textContent = "nuova";
   showSettings(false);
   syncToolControls();

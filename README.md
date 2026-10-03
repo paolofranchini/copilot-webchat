@@ -8,12 +8,12 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 
 - **Interfaccia chat** semplice, scura, responsive (sidebar collassabile su mobile).
 - **Login con sola password** (nessun nome utente), hash salvato con `scrypt`.
-- **Cronologia conversazioni** persistente su SQLite: ogni chat è riprendibile in qualsiasi momento.
-- **Gestione chat**: ogni conversazione può essere rinominata o eliminata dalla sidebar.
+- **Cronologia conversazioni** letta dai file nativi delle sessioni Copilot; le stesse sessioni sono accessibili sia dalla CLI sia dalla webchat.
+- **Gestione sessioni**: ogni sessione Copilot può essere rinominata o eliminata definitivamente dalla sidebar.
 - **Continuità di contesto**: ogni conversazione richiama `copilot --resume` sullo stesso `session-id`, così Copilot ricorda lo storico dei messaggi precedenti.
-- **Modello fissato per chat**: il modello si seleziona dalla sidebar e resta invariato per tutta la conversazione, anche quando si usa `auto`; viene mostrato come etichetta sotto ogni risposta.
-- **Crediti per chat**: la webchat salva le statistiche cumulative restituite dalla CLI e mostra i crediti AI (o le richieste premium sui piani legacy) nella sidebar e nella chat aperta.
-- **Autorizzazioni chat**: nella sidebar puoi autorizzare separatamente l'esecuzione di comandi e la modifica di file per tutta la chat, oppure usare "Consenti tutto" (`--allow-all`); gli strumenti non selezionati vengono negati esplicitamente.
+- **Modello per chat**: il modello si seleziona dalla sidebar; su una chat aperta la scelta equivale a `/model <modello>` e vale per i turni successivi. Per una chat nuova viene usato come modello iniziale.
+- **Crediti per sessione**: il totale AIU viene letto dal database nativo di Copilot CLI e mostrato nell'area di composizione della chat.
+- **Modalità chat**: Ask non espone strumenti, Edit abilita comandi e modifica file, Agent concede tutti i permessi mantenendo la modalità interattiva della CLI. La scelta è associata alla chat.
 - **File allegati**: il pulsante `+` apre un'area per selezionare o trascinare file (fino a 5 file da 10 MB ciascuno per messaggio). Immagini e documenti nativi vengono passati a Copilot come allegati; i file testuali comuni vengono inseriti direttamente nel prompt.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
 
@@ -22,7 +22,7 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 Premi **Impostazioni** sotto «Nuova chat» per aprire la schermata dedicata
 nell'area principale; scegli una chat dalla sidebar o premi «Nuova chat» per
 tornare ai messaggi. La schermata riunisce l'interruttore **Modalità avanzata**
-nella sezione Generali, il modello e le autorizzazioni (disponibili anche
+nella sezione Generali, il modello e la modalità chat (disponibili anche
 nella sidebar), le opzioni per la chat selezionata e la gestione dei server MCP e delle
 skill/plugin. Modello e autorizzazioni sono sincronizzati tra le due posizioni.
 La modalità avanzata è salvata nel `localStorage` del browser; di default
@@ -48,8 +48,9 @@ flag. Le impostazioni delle singole chat sono salvate nel database.
 - **Skill e plugin**: elenco in sola lettura tramite `copilot skill list --json` e
   `copilot plugin list --json`. La CLI installata non offre un flag di selezione
   delle skill per singola invocazione; non è possibile abilitarle per chat dalla UI.
-- **Comandi**: `/help`, `/usage`, `/model <modello>` sono gestiti dalla webchat, non
-  inviati arbitrariamente alla CLI. I permessi avanzati possono autorizzare pattern
+- **Comandi**: `/help` e `/usage` (in modalità avanzata) e `/model <modello>` sono
+  gestiti dalla webchat, non inviati arbitrariamente alla CLI. Il selettore applica
+  `/model` alla chat aperta anche senza modalità avanzata. I permessi avanzati possono autorizzare pattern
   puntuali come `shell(git status)` o `url(github.com)`, oltre ai permessi esistenti.
   La CLI non espone un canale di approvazione bidirezionale affidabile in modalità
   `-p`: le richieste di conferma per singola azione **non** sono disponibili.
@@ -86,7 +87,8 @@ Dati d'esecuzione (non versionati, salvati fuori dal repo in `~/.copilot/`):
 
 - `webchat_auth` — hash della password di accesso.
 - `webchat_secret` — chiave segreta per firmare i cookie di sessione Flask.
-- `webchat.db` — database SQLite con l'elenco delle chat e i messaggi.
+- `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP). Non contiene la cronologia né i crediti.
+- `session-state/` — sessioni native Copilot, inclusi eventi e cronologia delle conversazioni.
 
 ## Configurazione iniziale
 
@@ -153,12 +155,14 @@ sudo systemctl enable --now copilot-webchat.service
 
 1. Apri `http://<ip-tailscale-o-locale>:7890` da un dispositivo connesso alla tua rete privata.
 2. Inserisci la password configurata.
-3. Seleziona il modello e le autorizzazioni dalla sidebar, poi scrivi un messaggio: il modello scelto viene fissato per tutta la chat e passato a ogni richiesta, incluse quelle con `--resume`. Con `Auto`, la prima risposta determina il modello che verrà mantenuto nei turni successivi. Le autorizzazioni restano associate alla chat. "Consenti tutto" equivale a `--allow-all` (anche noto come modalità `/yolo`). Usa il pulsante `+` vicino al campo di testo per allegare qualsiasi tipo di file.
+3. Seleziona il modello e la modalità dalla sidebar, poi scrivi un messaggio. Su una chat aperta cambiare modello applica subito `/model <modello>` alla chat e influisce sui turni successivi; quando non è selezionata una chat, la scelta diventa il modello iniziale per la prossima chat. Il modello usato viene mostrato sotto ogni risposta. La modalità resta associata alla chat. **Ask** non espone tool; **Edit** abilita shell e scrittura; **Agent** usa `--allow-all` mantenendo `--mode interactive`. Usa il pulsante `+` vicino al campo di testo per allegare qualsiasi tipo di file.
 4. Usa "＋ Nuova chat" per iniziare una conversazione pulita, seleziona una chat precedente per riprenderla, l'icona matita per rinominarla o il cestino per eliminarla.
 5. L'utilizzo crediti viene aggiornato dopo ogni esecuzione della CLI; le chat senza statistiche disponibili mostrano "Utilizzo crediti non disponibile".
 
+La sidebar legge le sessioni native Copilot, indipendentemente da come sono state create. Puoi iniziare una chat nella webchat e riprenderla dalla CLI, o viceversa; i nomi legacy che iniziano con `webchat:` vengono mostrati senza prefisso. **Elimina** rimuove l'intera directory della sessione Copilot e i relativi metadati webchat dal database, quindi la cronologia non è recuperabile. Le sessioni attualmente in uso dalla CLI non possono essere eliminate.
+
 ## Sicurezza
 
-- Per ogni chat puoi concedere separatamente `--allow-tool=shell` (comandi) e `--allow-tool=write` (modifica file), oppure `--allow-all` (tutte le autorizzazioni). Gli strumenti non selezionati ricevono rispettivamente `--deny-tool=shell` e `--deny-tool=write`; se non selezioni nulla, entrambi sono negati. L'autorizzazione `shell` resta potente: i comandi eseguiti possono modificare file anche quando lo strumento `write` è negato.
+- **Ask** limita la CLI a nessuno strumento; **Edit** abilita `--allow-tool=shell` e `--allow-tool=write`; **Agent** usa `--allow-all` in modalità interattiva, non autopilot. Shell può modificare file anche quando lo strumento `write` è negato, quindi Edit consente operazioni potenzialmente distruttive. La modalità avanzata mantiene inoltre le impostazioni separate per tool specifici e server MCP.
 - **Non esporre questo servizio su internet pubblico** senza aggiungere ulteriori misure di sicurezza (reverse proxy con TLS, rate limiting, ecc.). È pensato per essere raggiunto solo tramite una rete privata come Tailscale.
 - La password è salvata solo come hash (`scrypt`), mai in chiaro.
