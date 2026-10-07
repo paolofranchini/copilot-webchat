@@ -32,11 +32,15 @@ const slashSuggestions = document.getElementById("slashSuggestions");
 const dictationStatus = document.getElementById("dictationStatus");
 
 let currentChatId = null;
+let pendingChatId = null;
 let attachedFiles = [];
 let busy = false;
 let mcpServers = [];
 let selectedMcpServers = [];
 let pendingPlan = false;
+let activeJob = null;
+let jobController = null;
+let wakeJob = null;
 const chatPermissions = new Map();
 const chatUsages = new Map();
 const chatPlans = new Map();
@@ -119,6 +123,41 @@ function setModelControls(model, isChat = Boolean(currentChatId)) {
 const savedModel = localStorage.getItem("copilot-model") || "auto";
 setModelControls(savedModel, false);
 localStorage.setItem("copilot-model", modelSelect.value);
+async function loadModels() {
+  try {
+    const data = await jsonRequest("/api/command", "POST", { command: "/model" });
+    if (!Array.isArray(data.models) || !data.models.length
+      || data.models.some((model) => typeof model !== "string")) {
+      throw new Error("Elenco modelli di Copilot non valido");
+    }
+    const selectedModel = currentChatId
+      ? chatModels.get(currentChatId) || modelSelect.value || savedModel
+      : modelSelect.value || savedModel;
+    for (const select of [modelSelect, settingsModelSelect]) {
+      const model = select.value || selectedModel;
+      select.replaceChildren();
+      for (const id of data.models) {
+        const option = document.createElement("option");
+        option.value = id;
+        option.textContent = id === "auto" ? "Auto" : id;
+        select.append(option);
+      }
+      if (!data.models.includes(model)) {
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = model;
+        select.append(option);
+      }
+      select.value = model;
+      select.disabled = false;
+    }
+    setModelControls(selectedModel, Boolean(currentChatId));
+    showNotice("");
+  } catch (err) {
+    for (const select of [modelSelect, settingsModelSelect]) select.disabled = true;
+    showNotice(err.message);
+  }
+}
 let modelUpdating = false;
 for (const select of [modelSelect, settingsModelSelect]) {
   select.addEventListener("change", async () => {
@@ -171,6 +210,67 @@ function showSettings(open) {
 settingsBtn.addEventListener("click", () => {
   if (busy) return;
   showSettings(true);
+});
+
+const restartServiceBtn = document.getElementById("restartServiceBtn");
+const restartServiceStatus = document.getElementById("restartServiceStatus");
+restartServiceBtn.addEventListener("click", async () => {
+  if (busy) {
+    showNotice("Attendi che Copilot termini prima di riavviare");
+    return;
+  }
+  if (!window.confirm("Riavviare il servizio? La pagina si ricaricherà automaticamente quando sarà di nuovo disponibile.")) return;
+  restartServiceBtn.disabled = true;
+  restartServiceStatus.hidden = false;
+  restartServiceStatus.textContent = "Richiesta di riavvio...";
+  let oldInstance;
+  try {
+    const response = await fetch("/api/service", { cache: "no-store" });
+    if (response.status === 401) { window.location.href = "/login.html"; return; }
+    const status = await readApiResponse(response);
+    if (!response.ok || !status.instance_id) throw new Error(status.error || "Impossibile verificare il servizio");
+    oldInstance = status.instance_id;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch("/api/service/restart", {
+        method: "POST", signal: controller.signal,
+      });
+      if (res.status === 401) { window.location.href = "/login.html"; return; }
+      const data = await readApiResponse(res);
+      if (!res.ok) throw Object.assign(new Error(data.error || "Riavvio non riuscito"), { rejected: true });
+    } catch (err) {
+      if (err.rejected) throw err;
+      // Una risposta persa non conferma il riavvio: verifica la nuova istanza.
+    } finally {
+      clearTimeout(timeout);
+    }
+    restartServiceStatus.textContent = "In attesa del servizio; la pagina si ricaricherà automaticamente...";
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        const res = await fetch("/api/service", { cache: "no-store", signal: controller.signal });
+        if (res.status === 401) { window.location.href = "/login.html"; return; }
+        const data = await readApiResponse(res);
+        if (res.ok && data.instance_id && data.instance_id !== oldInstance) {
+          window.location.reload();
+          return;
+        }
+      } catch (_error) {
+        // Il servizio puo' non rispondere durante il riavvio.
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw new Error("Riavvio non confermato entro un minuto. Verifica il servizio e ricarica la pagina.");
+  } catch (err) {
+    restartServiceStatus.textContent = err.message;
+  } finally {
+    restartServiceBtn.disabled = false;
+  }
 });
 
 function selectedPermissions() {
@@ -244,14 +344,40 @@ async function readApiResponse(response) {
 }
 
 // Formattazione markdown minimale e sicura: escape HTML prima di tutto,
-// poi converte solo titoli, grassetto/corsivo/code/newline (nessun HTML arbitrario).
+// poi converte il markdown supportato (nessun HTML arbitrario).
+function imageUrl(source) {
+  const local = source.match(/^\/api\/chats\/[a-f0-9-]+\/images\/[^?#]+$/i);
+  if (!/^https?:\/\//i.test(source) && !local) return null;
+  try {
+    const url = new URL(source, window.location.href);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    if (local && !url.pathname.startsWith(source.slice(0, source.indexOf("/images/") + 8))) return null;
+    return url.href;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function renderMarkdown(text) {
   let html = escapeHtml(text);
-  const codeBlocks = [];
-  html = html.replace(/```([\s\S]*?)```/g, (_, code) => {
-    const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
-    codeBlocks.push(`<pre><code>${code}</code></pre>`);
+  const fragments = [];
+  let prefix = "@@MARKDOWN_FRAGMENT_";
+  while (text.includes(prefix)) prefix = `@${prefix}`;
+  const protect = (markup) => {
+    const token = `${prefix}${fragments.length}@@`;
+    fragments.push(markup);
     return token;
+  };
+  html = html.replace(/```([\s\S]*?)```/g, (_, code) => {
+    return protect(`<pre><code>${code}</code></pre>`);
+  });
+  html = html.replace(/`([^`]+)`/g, (_, code) => protect(`<code>${code}</code>`));
+  html = html.replace(/!\[([^\]\n]*)\]\(([^ \n]+)\)/g, (match, alt, source) => {
+    const url = imageUrl(source.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"));
+    if (!url) return protect(match);
+    const href = escapeHtml(url).replace(/"/g, "&quot;");
+    const label = alt.replace(/"/g, "&quot;");
+    return protect(`<a class="message-image" href="${href}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"><img src="${href}" alt="${label}" loading="lazy" referrerpolicy="no-referrer"></a>`);
   });
   const lines = html.split("\n");
   const tableLines = [];
@@ -297,12 +423,11 @@ function renderMarkdown(text) {
     /^( {0,3})(#{1,6})[ \t]+(.+?)[ \t]*#?[ \t]*$/gm,
     (_, _indent, hashes, title) => `<h${hashes.length}>${title}</h${hashes.length}>`,
   );
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
   html = html.replace(/\n/g, "<br>");
-  codeBlocks.forEach((block, index) => {
-    html = html.replace(`@@CODE_BLOCK_${index}@@`, block);
+  fragments.forEach((fragment, index) => {
+    html = html.replace(`${prefix}${index}@@`, () => fragment);
   });
   return html;
 }
@@ -320,42 +445,77 @@ function formatMessageTime(ts) {
   return date.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
 }
 
-function addMessage(text, cls, model, ts) {
+function addMessage(text, cls, model, ts, usage) {
   const el = document.createElement("div");
   el.className = `msg ${cls}`;
-  if (cls.startsWith("bot")) {
+  if (el.classList.contains("pending")) {
+    el.classList.add("thinking");
+    el.setAttribute("role", "status");
+    const label = document.createElement("span");
+    label.className = "thinking-label";
+    label.textContent = text.replace(/\.{3}$/, "");
+    const dots = document.createElement("span");
+    dots.className = "thinking-dots";
+    dots.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < 3; index += 1) {
+      dots.appendChild(document.createElement("span"));
+    }
+    el.append(label, dots);
+  } else if (cls.startsWith("bot")) {
     el.innerHTML = renderMarkdown(text);
+    el.querySelectorAll(".message-image img").forEach((image) => {
+      image.addEventListener("error", () => {
+        const error = document.createElement("span");
+        error.className = "message-image-error";
+        error.textContent = `Immagine non disponibile${image.alt ? `: ${image.alt}` : ""}`;
+        image.replaceWith(error);
+      }, { once: true });
+    });
   } else {
     el.textContent = text;
   }
-  if (model) {
-    const tag = document.createElement("div");
-    tag.className = "model-tag";
-    tag.textContent = model;
-    el.appendChild(tag);
-  }
   if (!cls.includes("pending") && !cls.includes("error")) {
+    const metadata = document.createElement("div");
+    metadata.className = "msg-metadata";
+    if (model) {
+      const tag = document.createElement("span");
+      tag.className = "model-tag";
+      tag.textContent = model;
+      tag.title = model;
+      metadata.appendChild(tag);
+    }
+    const credits = formatChatUsage(usage, true);
+    if (credits) {
+      const cost = document.createElement("span");
+      cost.className = "msg-credits";
+      cost.textContent = credits;
+      cost.title = "Consumo del turno, incluse chiamate ai tool e sottoagenti";
+      metadata.appendChild(cost);
+    }
     const time = formatMessageTime(ts);
     if (time) {
-      const timeEl = document.createElement("div");
+      const timeEl = document.createElement("span");
       timeEl.className = "msg-time";
       timeEl.textContent = time;
-      el.appendChild(timeEl);
+      metadata.appendChild(timeEl);
     }
+    if (metadata.childElementCount) el.appendChild(metadata);
   }
   messagesEl.appendChild(el);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return el;
 }
 
-function formatChatUsage(usage) {
+function formatChatUsage(usage, compact = false) {
   if (!usage) return null;
   const numberFormat = new Intl.NumberFormat("it-IT", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
   if (Number.isFinite(usage.ai_credits)) {
-    return `${numberFormat.format(usage.ai_credits)} crediti AI`;
+    return compact
+      ? `✦ ${numberFormat.format(usage.ai_credits)}`
+      : `${numberFormat.format(usage.ai_credits)} crediti AI`;
   }
   if (Number.isFinite(usage.premium_requests)) {
     return `${numberFormat.format(usage.premium_requests)} richieste premium`;
@@ -815,13 +975,15 @@ async function deleteChat(chatId) {
   loadChatList();
 }
 
-async function openChat(chatId) {
-  if (busy) return;
+async function openChat(chatId, refresh = false) {
+  if (busy && !refresh) return false;
   const res = await fetch(`/api/chats/${chatId}`);
   if (res.status === 401) { window.location.href = "/login.html"; return; }
-  if (!res.ok) return;
+  if (!res.ok) return false;
   const msgs = await res.json();
+  pendingChatId = null;
   currentChatId = chatId;
+  sessionStorage.setItem("copilot-current-chat", chatId);
   setModelControls(chatModels.get(chatId) || localStorage.getItem("copilot-model") || "auto", true);
   showSettings(false);
   syncToolControls();
@@ -834,7 +996,7 @@ async function openChat(chatId) {
   messagesEl.innerHTML = "";
   const lastPlanIndex = msgs.findLastIndex((message) => message.role === "plan");
   for (const [index, m] of msgs.entries()) {
-    const element = addMessage(m.content, m.role === "user" ? "user" : "bot", m.model, m.ts);
+    const element = addMessage(m.content, m.role === "user" ? "user" : "bot", m.model, m.ts, m.usage);
     if (index === lastPlanIndex && pendingPlan) {
       element.classList.add("pending-plan-message");
       attachPlanActions(element);
@@ -842,6 +1004,7 @@ async function openChat(chatId) {
   }
   sidebar.classList.add("hidden");
   loadChatList();
+  return true;
 }
 
 function attachPlanActions(element) {
@@ -857,6 +1020,10 @@ function attachPlanActions(element) {
     button.textContent = label;
     button.addEventListener("click", async () => {
       if (busy) return;
+      if (path.endsWith("approve")) {
+        await approvePlanAsync();
+        return;
+      }
       busy = true;
       actions.querySelectorAll("button").forEach((item) => { item.disabled = true; });
       const placeholder = path.endsWith("approve") ? addMessage("Copilot sta eseguendo il piano...", "bot pending") : null;
@@ -868,7 +1035,7 @@ function attachPlanActions(element) {
         if (currentChatId) chatPlans.set(currentChatId, false);
         if (data.chat_id) currentChatId = data.chat_id;
         if (data.usage && currentChatId) chatUsages.set(currentChatId, data.usage);
-        if (data.reply) addMessage(data.reply, "bot", data.model, data.ts);
+        if (data.reply) addMessage(data.reply, "bot", data.model, data.ts, data.message_usage);
         renderChatUsage();
         loadChatList();
         showNotice(path.endsWith("cancel") ? "Piano annullato" : "");
@@ -896,75 +1063,195 @@ function showActivity(container, event) {
 }
 
 async function streamChat(formData, pending, activity) {
-  const res = await fetch("/api/chat/stream", { method: "POST", body: formData });
-  if (res.status === 401) { window.location.href = "/login.html"; throw new Error("non autenticato"); }
-  if (res.status === 404 || res.status === 501) return null;
-  if (!res.ok) {
-    const data = await readApiResponse(res);
-    throw new Error(data.error || `Errore HTTP ${res.status}`);
-  }
-  if (!res.body?.getReader) throw new Error("Streaming non supportato dal browser");
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let complete = null;
-  let partial = "";
-  const handleBlock = (block) => {
-    const payload = block.split(/\r?\n/).filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart()).join("\n");
-    if (!payload) return;
-    const event = JSON.parse(payload);
-    if (event.type === "chat_created") {
-      currentChatId = event.chat_id;
-      chatModels.set(currentChatId, modelSelect.value);
-      setModelControls(modelSelect.value, true);
-      syncToolControls();
-      chatPermissions.set(currentChatId, selectedPermissions());
-      chatPlans.set(currentChatId, false);
-      if (advancedEnabled()) {
-        chatMcpServers.set(currentChatId, [...selectedMcpServers]);
-        chatTools.set(currentChatId, selectedTools());
-      }
-      renderChatUsage();
-      loadChatList();
-    } else if (event.type === "done") {
-      complete = event;
-    } else if (event.type === "error") {
-      const error = new Error(event.error || "Errore durante lo streaming");
-      error.chat_id = event.chat_id;
-      error.usage = event.usage;
-      throw error;
-    } else if (event.type === "tool.execution_start") {
-      showActivity(activity, event);
-    } else if (event.type === "assistant.message.delta") {
-      partial += event.content || "";
-      pending.textContent = partial;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-  };
+  formData.append("async", "true");
+  formData.append("request_id", activeJob.id);
+  const url = formData.get("advanced") === "true" ? "/api/chat/stream" : "/api/chat";
+  await startJobRequest(url, { method: "POST", body: formData });
+  return waitForJob(pending, activity);
+}
+
+function newRequestId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function rememberJob() {
+  sessionStorage.setItem("copilot-pending-job", JSON.stringify(activeJob));
+}
+
+function clearJob() {
+  activeJob = null;
+  sessionStorage.removeItem("copilot-pending-job");
+}
+
+function setChatBusy(value) {
+  busy = value;
+  sendBtn.disabled = value;
+  newChatBtn.disabled = value;
+  attachmentBtn.disabled = value;
+  document.querySelectorAll(".plan-actions button").forEach((button) => { button.disabled = value; });
+  syncToolControls();
+  renderMcpServers();
+}
+
+async function jobFetch(url, options = {}) {
+  jobController = new AbortController();
+  const controller = jobController;
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      buffer = buffer.replace(/\r\n/g, "\n");
-      let boundary;
-      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-        handleBlock(buffer.slice(0, boundary));
-        buffer = buffer.slice(boundary + 2);
-      }
-      if (done) {
-        if (buffer.trim()) handleBlock(buffer);
-        break;
-      }
-    }
-  } catch (err) {
-    if (err.chat_id || err.usage || err.message === "Errore durante lo streaming") throw err;
-    throw new Error(`${err.message}. La richiesta potrebbe essere già stata elaborata: controlla la cronologia prima di riprovare`);
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    const data = await readApiResponse(res);
+    return { res, data };
   } finally {
-    reader.releaseLock();
+    clearTimeout(timeout);
+    if (jobController === controller) jobController = null;
   }
-  if (!complete) throw new Error("Stream interrotto prima della risposta finale; controlla la cronologia prima di riprovare");
-  return complete;
+}
+
+function pauseJob() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, document.hidden ? 30000 : 1500);
+    function done() {
+      clearTimeout(timer);
+      wakeJob = null;
+      resolve();
+    }
+    wakeJob = done;
+  });
+}
+
+function resumeJob() {
+  if (document.hidden) return;
+  jobController?.abort();
+  wakeJob?.();
+}
+document.addEventListener("visibilitychange", resumeJob);
+window.addEventListener("pageshow", resumeJob);
+window.addEventListener("online", resumeJob);
+
+async function startJobRequest(url, options) {
+  let res;
+  let data;
+  try {
+    ({ res, data } = await jobFetch(url, options));
+  } catch (_error) {
+    showNotice("Connessione sospesa: recupero automatico della richiesta al ritorno.");
+    return;
+  }
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    throw new Error("non autenticato");
+  }
+  if (!res.ok) {
+    clearJob();
+    throw Object.assign(new Error(data.error || `Errore HTTP ${res.status}`), data);
+  }
+  if (data.job_id !== activeJob.id || !data.chat_id) {
+    showNotice("Conferma di invio non leggibile: recupero automatico della richiesta.");
+    return;
+  }
+  activeJob.accepted = true;
+  activeJob.chat_id = data.chat_id;
+  currentChatId = data.chat_id;
+  pendingChatId = null;
+  sessionStorage.setItem("copilot-current-chat", currentChatId);
+  rememberJob();
+}
+
+async function waitForJob(pending, activity) {
+  let missing = 0;
+  while (activeJob) {
+    if (document.hidden || !navigator.onLine) {
+      await pauseJob();
+      continue;
+    }
+    let res;
+    let data;
+    try {
+      ({ res, data } = await jobFetch(`/api/chat/jobs/${activeJob.id}`));
+    } catch (_error) {
+      showNotice("Connessione sospesa: la risposta verrà recuperata automaticamente.");
+      await pauseJob();
+      continue;
+    }
+    if (res.status === 401) {
+      window.location.href = "/login.html";
+      throw new Error("non autenticato");
+    }
+    if (res.status === 404 && !activeJob.accepted) {
+      missing += 1;
+      if (missing >= 5) {
+        clearJob();
+        const error = new Error("Invio non confermato dal server. Controlla la cronologia prima di riprovare.");
+        error.unconfirmed = true;
+        throw error;
+      }
+      await pauseJob();
+      continue;
+    }
+    if (!res.ok) {
+      showNotice(data.error || `Recupero risposta non disponibile (HTTP ${res.status}); nuovo tentativo automatico.`);
+      await pauseJob();
+      continue;
+    }
+    if (!data.chat_id || !["running", "done", "error"].includes(data.status)
+      || (data.status !== "running" && !data.result)) {
+      showNotice("Stato della risposta non leggibile; nuovo tentativo automatico.");
+      await pauseJob();
+      continue;
+    }
+    activeJob.accepted = true;
+    activeJob.chat_id = data.chat_id;
+    currentChatId = data.chat_id;
+    pendingChatId = null;
+    sessionStorage.setItem("copilot-current-chat", currentChatId);
+    rememberJob();
+    showNotice("");
+    if (data.progress?.content) {
+      pending.classList.remove("thinking");
+      pending.removeAttribute("role");
+      pending.textContent = data.progress.content;
+    }
+    activity.replaceChildren();
+    for (const event of data.progress?.tools || []) showActivity(activity, event);
+    if (data.status !== "running") {
+      clearJob();
+      if (data.status === "error") {
+        throw Object.assign(new Error(data.result?.error || "Errore durante l'elaborazione"), data.result);
+      }
+      return data.result;
+    }
+    await pauseJob();
+  }
+}
+
+async function approvePlanAsync() {
+  setChatBusy(true);
+  activeJob = { id: newRequestId(), chat_id: currentChatId, accepted: false };
+  rememberJob();
+  const pending = addMessage("Copilot sta eseguendo il piano...", "bot pending");
+  const activity = document.createElement("div");
+  messagesEl.append(activity);
+  try {
+    await startJobRequest("/api/chat/plan/approve", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ advanced: true, async: true, request_id: activeJob.id, chat_id: currentChatId }),
+    });
+    const data = await waitForJob(pending, activity);
+    pendingPlan = false;
+    chatPlans.set(currentChatId, false);
+    await loadChatList();
+    if (!await openChat(currentChatId, true)) addMessage(data.reply, "bot", data.model, data.ts, data.message_usage);
+  } catch (err) {
+    showNotice(err.message);
+  } finally {
+    pending.remove();
+    activity.remove();
+    setChatBusy(false);
+  }
 }
 
 async function sendCommand(text) {
@@ -1024,6 +1311,7 @@ async function submitChat(e) {
     }
     const formData = new FormData();
     formData.append("message", text);
+    formData.append("chat_id", currentChatId || pendingChatId || "");
     formData.append("model", modelSelect.value);
     formData.append("permissions", JSON.stringify(selectedPermissions()));
     if (advanced) {
@@ -1033,20 +1321,16 @@ async function submitChat(e) {
       if (planToggle.checked) formData.append("plan", "true");
     }
     submittedFiles.forEach((file) => formData.append("files", file));
-    let data;
-    if (advanced) data = await streamChat(formData, pending, activity);
-    if (!data) {
-      if (advanced && (planToggle.checked || submissionServers.length || submissionTools.length)) {
-        throw new Error("Piano, MCP e tool specifici richiedono lo streaming; richiesta non inviata");
-      }
-      const res = await fetch("/api/chat", { method: "POST", body: formData });
-      data = await readApiResponse(res);
-      if (res.status === 401) { window.location.href = "/login.html"; return; }
-      if (!res.ok) throw Object.assign(new Error(data.error || "Errore sconosciuto"), { chat_id: data.chat_id, usage: data.usage });
-    }
+    activeJob = {
+      id: newRequestId(), chat_id: currentChatId || pendingChatId,
+      accepted: false, text: text || `[Allegati ${submittedFiles.length} file]`,
+    };
+    rememberJob();
+    const data = await streamChat(formData, pending, activity);
     pending.remove();
     if (data.chat_id) {
       currentChatId = data.chat_id;
+      pendingChatId = null;
       chatModels.set(currentChatId, data.model || modelSelect.value);
       setModelControls(data.model || modelSelect.value, true);
       syncToolControls();
@@ -1062,7 +1346,7 @@ async function submitChat(e) {
       renderChatUsage();
       loadChatList();
     }
-    const reply = addMessage(data.reply || "", "bot", data.model, data.ts);
+    const reply = addMessage(data.reply || "", "bot", data.model, data.ts, data.message_usage);
     if (pendingPlan) {
       reply.classList.add("pending-plan-message");
       attachPlanActions(reply);
@@ -1076,12 +1360,17 @@ async function submitChat(e) {
     // sarebbe fuorviante (l'invio è comunque avvenuto).
     if (err.chat_id) {
       currentChatId = err.chat_id;
+      pendingChatId = null;
       setModelControls(chatModels.get(currentChatId) || modelSelect.value, true);
       syncToolControls();
       if (err.usage) chatUsages.set(currentChatId, err.usage);
       renderChatUsage();
     }
     loadChatList();
+    if (err.unconfirmed) {
+      showNotice(err.message);
+      return;
+    }
     const errorMessage = addMessage(`Errore: ${err.message}`, "error");
     if (err.chat_id) {
       const reloadBtn = document.createElement("button");
@@ -1104,7 +1393,7 @@ async function submitChat(e) {
     newChatBtn.disabled = false;
     attachmentBtn.disabled = false;
     updateSlashSuggestions();
-    input.focus();
+    if (!document.hidden) input.focus();
   }
 }
 form.addEventListener("submit", submitChat);
@@ -1123,7 +1412,14 @@ newChatBtn.addEventListener("click", async () => {
     showNotice((await readApiResponse(res)).error || "Impossibile creare una nuova chat");
     return;
   }
+  const data = await readApiResponse(res);
+  if (!data.chat_id) {
+    showNotice("Il server non ha restituito l'ID della nuova chat");
+    return;
+  }
+  pendingChatId = data.chat_id;
   currentChatId = null;
+  sessionStorage.removeItem("copilot-current-chat");
   setModelControls(localStorage.getItem("copilot-model") || "auto", false);
   settingsChatName.textContent = "nuova";
   showSettings(false);
@@ -1154,5 +1450,54 @@ closeSidebarBtn.addEventListener("click", () => {
   sidebar.classList.add("hidden");
 });
 
-loadChatList();
+async function restoreChat() {
+  try {
+    const stored = sessionStorage.getItem("copilot-pending-job");
+    activeJob = stored ? JSON.parse(stored) : null;
+    if (activeJob) setChatBusy(true);
+    await loadChatList();
+    const chatId = activeJob?.chat_id || sessionStorage.getItem("copilot-current-chat");
+    let restored = false;
+    if (chatId) restored = await openChat(chatId, true);
+    if (!activeJob) return;
+    setChatBusy(true);
+    if (!restored && activeJob.text) addMessage(activeJob.text, "user");
+    const pending = addMessage("Copilot sta pensando...", "bot pending");
+    const activity = document.createElement("div");
+    messagesEl.append(activity);
+    try {
+      const data = await waitForJob(pending, activity);
+      await loadChatList();
+      if (!await openChat(data.chat_id, true)) {
+        addMessage(data.reply || "", "bot", data.model, data.ts, data.message_usage);
+      }
+    } catch (err) {
+      showNotice(err.message);
+    } finally {
+      pending.remove();
+      activity.remove();
+      setChatBusy(false);
+    }
+  } catch (err) {
+    showNotice(`Impossibile recuperare la chat: ${err.message}`);
+    if (activeJob) {
+      const pending = addMessage("Recupero della risposta...", "bot pending");
+      const activity = document.createElement("div");
+      messagesEl.append(activity);
+      try {
+        const data = await waitForJob(pending, activity);
+        if (!await openChat(data.chat_id, true)) addMessage(data.reply || "", "bot", data.model, data.ts, data.message_usage);
+      } catch (error) {
+        showNotice(error.message);
+      } finally {
+        pending.remove();
+        activity.remove();
+        setChatBusy(false);
+      }
+    }
+  }
+}
+
+restoreChat();
+loadModels();
 syncAdvancedMode();

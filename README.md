@@ -7,14 +7,18 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 ## Caratteristiche
 
 - **Interfaccia chat** semplice, scura, responsive (sidebar collassabile su mobile).
+- **Indicatore di attesa animato** con puntini durante l'elaborazione e testo nel colore originale; rispetta la preferenza del browser per ridurre il movimento e lascia spazio alla risposta appena arriva.
 - **Login con sola password** (nessun nome utente), hash salvato con `scrypt`.
 - **Cronologia conversazioni** letta dai file nativi delle sessioni Copilot; le stesse sessioni sono accessibili sia dalla CLI sia dalla webchat.
 - **Gestione sessioni**: ogni sessione Copilot può essere rinominata o eliminata definitivamente dalla sidebar.
 - **Continuità di contesto**: ogni conversazione richiama `copilot --resume` sullo stesso `session-id`, così Copilot ricorda lo storico dei messaggi precedenti.
-- **Modello per chat**: il modello si seleziona dalla sidebar; su una chat aperta la scelta equivale a `/model <modello>` e vale per i turni successivi. Per una chat nuova viene usato come modello iniziale.
+- **Risposte asincrone**: dopo l'invio Copilot lavora sul server, anche se cambi app, spegni lo schermo o ricarichi la pagina. Al ritorno nella stessa tab la risposta viene recuperata automaticamente; una perdita di connessione mostra un avviso neutro, non un errore rosso, e non reinvia il prompt. Gli errori effettivi di Copilot restano segnalati.
+- **Modello per chat**: l'elenco del selettore viene caricato dalla CLI a ogni apertura della webapp, senza una lista di modelli mantenuta nel frontend. Su una chat aperta la scelta equivale a `/model <modello>` e vale per i turni successivi; per una chat nuova viene usata come modello iniziale.
 - **Crediti per sessione**: il totale AIU viene letto dal database nativo di Copilot CLI e mostrato nell'area di composizione della chat.
+- **Metadati delle risposte**: modello, crediti e ora sono allineati su una sola riga. I crediti sono il costo del turno (tutte le chiamate registrate tra un messaggio utente e il successivo, incluse attività dei tool e sottoagenti) e compaiono solo sull'ultima risposta del turno, anche nella cronologia. I messaggi utente mostrano solo l'ora; se la CLI non ha registrato dati di consumo o timestamp utilizzabili, il costo non viene mostrato.
 - **Modalità chat**: Ask non espone strumenti, Edit abilita comandi e modifica file, Agent concede tutti i permessi mantenendo la modalità interattiva della CLI. La scelta è associata alla chat.
 - **File allegati**: il pulsante `+` apre un'area per selezionare o trascinare file (fino a 5 file da 10 MB ciascuno per messaggio). Immagini e documenti nativi vengono passati a Copilot come allegati; i file testuali comuni vengono inseriti direttamente nel prompt.
+- **Immagini nelle risposte**: Copilot può usare `![descrizione](https://...)` per mostrare immagini esterne oppure salvare immagini PNG, JPEG, GIF, WebP o AVIF nella cartella `files/` della sessione e mostrarle tramite `/api/chats/<id>/images/<nome-file>`. Un clic apre l'immagine a dimensione intera; gli errori di caricamento sono indicati nel messaggio. Il supporto funziona anche nella cronologia e nelle risposte asincrone; non aggiunge un generatore di immagini né modifica i permessi della chat.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
 
 ## Modalità avanzata (sperimentale)
@@ -29,11 +33,12 @@ La modalità avanzata è salvata nel `localStorage` del browser; di default
 è spenta e la chat normale continua a usare `POST /api/chat` senza nuovi
 flag. Le impostazioni delle singole chat sono salvate nel database.
 
-- **Streaming**: la chat avanzata legge gli eventi JSONL della CLI durante l'esecuzione
-  tramite `POST /api/chat/stream` (SSE) e mostra l'attività dei tool. Se la CLI non
-  emette delta testuali, la risposta compare al termine; un'interruzione a metà
-  **non** ritenta automaticamente il prompt, per non eseguire due volte la richiesta.
-  Timeout e disconnessione terminano il processo.
+- **Streaming**: il server legge gli eventi JSONL della CLI durante l'esecuzione
+  e la chat recupera periodicamente testo e attività dei tool. Se la CLI non
+  emette delta testuali, la risposta compare al termine. La disconnessione del
+  browser non termina il processo e **non** ritenta il prompt. Il limite di
+  esecuzione resta di 300 secondi. Anche l'approvazione di un piano è asincrona.
+  L'API conserva gli endpoint sincroni/SSE per i client che non richiedono `async`.
 - **Piano**: `--plan` produce un piano senza autorizzare shell, scrittura o URL.
   L'utente può approvarlo o annullarlo; l'approvazione riprende la stessa sessione
   CLI con i permessi della chat. Finché il piano è in attesa, non è possibile inviare
@@ -48,9 +53,12 @@ flag. Le impostazioni delle singole chat sono salvate nel database.
 - **Skill e plugin**: elenco in sola lettura tramite `copilot skill list --json` e
   `copilot plugin list --json`. La CLI installata non offre un flag di selezione
   delle skill per singola invocazione; non è possibile abilitarle per chat dalla UI.
-- **Comandi**: `/help` e `/usage` (in modalità avanzata) e `/model <modello>` sono
-  gestiti dalla webchat, non inviati arbitrariamente alla CLI. Il selettore applica
-  `/model` alla chat aperta anche senza modalità avanzata. I permessi avanzati possono autorizzare pattern
+- **Comandi**: `/help` e `/usage` (in modalità avanzata) e `/model` sono gestiti
+  dalla webchat, non inviati arbitrariamente alla CLI. All'avvio, `/model` interroga
+  le completion della CLI per caricare gli ID disponibili; l'elenco riflette la
+  versione installata e può includere modelli non abilitati per il proprio account.
+  Il selettore applica `/model <modello>` alla chat aperta anche senza modalità
+  avanzata. I permessi avanzati possono autorizzare pattern
   puntuali come `shell(git status)` o `url(github.com)`, oltre ai permessi esistenti.
   La CLI non espone un canale di approvazione bidirezionale affidabile in modalità
   `-p`: le richieste di conferma per singola azione **non** sono disponibili.
@@ -87,8 +95,8 @@ Dati d'esecuzione (non versionati, salvati fuori dal repo in `~/.copilot/`):
 
 - `webchat_auth` — hash della password di accesso.
 - `webchat_secret` — chiave segreta per firmare i cookie di sessione Flask.
-- `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP). Non contiene la cronologia né i crediti.
-- `session-state/` — sessioni native Copilot, inclusi eventi e cronologia delle conversazioni.
+- `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP), stato e risultati dei lavori asincroni. La cronologia principale e i crediti restano nei dati nativi Copilot. I risultati dei lavori vengono rimossi quando elimini la chat.
+- `session-state/` — sessioni native Copilot, inclusi eventi e cronologia delle conversazioni. Le immagini locali mostrate nelle risposte restano nella sottocartella `files/` della sessione e vengono eliminate insieme alla chat.
 
 ## Configurazione iniziale
 
@@ -122,6 +130,22 @@ python3 app.py
 ```
 
 Il servizio si mette in ascolto su `http://0.0.0.0:7890`.
+
+I lavori asincroni continuano finché il processo Flask resta attivo: un riavvio
+del server interrompe quelli in corso, che vengono segnalati come interrotti
+senza rilanciarli automaticamente. Lo stato di recupero della tab è salvato nel
+`sessionStorage` del browser; una ricarica lo conserva, la chiusura della tab no.
+In quel caso puoi comunque riaprire la conversazione dalla sidebar.
+
+In **Impostazioni → Generali**, **Riavvia servizio** applica gli aggiornamenti
+del backend e ricarica la pagina quando la nuova istanza è pronta. Richiede
+che l'app sia il processo principale di `copilot-webchat.service`, con
+`Restart=on-failure` (come nell'esempio sotto) oppure `always`: il processo
+esce dopo aver risposto e systemd lo rilancia, senza richiedere sudo.
+Il riavvio è rifiutato se ci sono lavori webchat o sessioni CLI in esecuzione.
+Con `python3 app.py` avviato manualmente il pulsante segnala che il riavvio
+non è disponibile. Per installare il pulsante la prima volta serve ancora
+un riavvio manuale del servizio.
 
 ### Come servizio systemd (avvio automatico, riavvio in caso di crash)
 
@@ -166,3 +190,4 @@ La sidebar legge le sessioni native Copilot, indipendentemente da come sono stat
 - **Ask** limita la CLI a nessuno strumento; **Edit** abilita `--allow-tool=shell` e `--allow-tool=write`; **Agent** usa `--allow-all` in modalità interattiva, non autopilot. Shell può modificare file anche quando lo strumento `write` è negato, quindi Edit consente operazioni potenzialmente distruttive. La modalità avanzata mantiene inoltre le impostazioni separate per tool specifici e server MCP.
 - **Non esporre questo servizio su internet pubblico** senza aggiungere ulteriori misure di sicurezza (reverse proxy con TLS, rate limiting, ecc.). È pensato per essere raggiunto solo tramite una rete privata come Tailscale.
 - La password è salvata solo come hash (`scrypt`), mai in chiaro.
+- Le immagini locali richiedono il login e sono limitate alla cartella `files/` della sessione: non sono esposti percorsi arbitrari del server e SVG/HTML non sono serviti. Le immagini esterne vengono caricate direttamente dal browser, senza inviare il referrer: il sito esterno vede comunque l'IP del dispositivo. Usa solo URL fidati.

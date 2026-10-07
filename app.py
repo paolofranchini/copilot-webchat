@@ -15,13 +15,15 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import closing
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, request, session, stream_with_context
+from flask import Flask, Response, g, jsonify, request, send_file, session, stream_with_context
 from werkzeug.datastructures import FileStorage
 from werkzeug.security import check_password_hash
 
@@ -48,6 +50,10 @@ MAX_ATTACHMENTS_PER_MESSAGE = 5
 MAX_TEXT_ATTACHMENT_SIZE = 1 * 1024 * 1024
 UPLOAD_DIR = CONFIG_DIR / "webchat_uploads"
 SESSION_STATE_DIR = CONFIG_DIR / "session-state"
+IMAGE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
+}
 PERMISSION_FLAGS = {
     "shell": "--allow-tool=shell",
     "write": "--allow-tool=write",
@@ -61,6 +67,9 @@ TOOL_PATTERN = re.compile(
 )
 SERVER_NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,60}$")
 ENV_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+SERVICE_INSTANCE_ID = uuid.uuid4().hex
+SERVICE_RESTART_LOCK = threading.Lock()
+service_restarting = False
 
 
 def get_db():
@@ -231,6 +240,17 @@ def init_db():
                    WHERE model IS NULL"""
             )
         db.execute("DROP TABLE IF EXISTS messages")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS chat_jobs (
+                id TEXT PRIMARY KEY, chat_id TEXT NOT NULL,
+                status TEXT NOT NULL, owner_pid INTEGER NOT NULL,
+                progress TEXT NOT NULL DEFAULT '{}', result TEXT
+            )"""
+        )
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS chat_jobs_running "
+            "ON chat_jobs(chat_id) WHERE status = 'running'"
+        )
 
 
 init_db()
@@ -322,6 +342,67 @@ def read_session_metadata(path):
     return metadata
 
 
+def message_timestamp(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp
+
+
+def attach_message_usage(session_id, messages):
+    """Il costo del turno include i tool ed e' mostrato sull'ultima risposta."""
+    turns = []
+    for index, message in enumerate(messages):
+        timestamp = message_timestamp(message["ts"])
+        if message["role"] == "user" and timestamp is not None:
+            turns.append((timestamp, index))
+    if not turns:
+        return
+    if any(turns[index][0] < turns[index - 1][0] for index in range(1, len(turns))):
+        app.logger.warning("Timestamp dei turni Copilot non ordinati: %s", session_id)
+        return
+    totals = {}
+    timestamps = [turn[0] for turn in turns]
+    uri = (CONFIG_DIR / "session-store.db").as_uri() + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as usage_db:
+            rows = usage_db.execute(
+                "SELECT created_at, total_nano_aiu FROM assistant_usage_events "
+                "WHERE session_id = ? AND total_nano_aiu IS NOT NULL",
+                (session_id,),
+            )
+            for created_at, nano_aiu in rows:
+                timestamp = message_timestamp(created_at)
+                amount = nonnegative_number(nano_aiu)
+                if timestamp is None or amount is None:
+                    continue
+                turn = bisect_right(timestamps, timestamp) - 1
+                if turn >= 0:
+                    totals[turn] = totals.get(turn, 0) + amount
+    except sqlite3.Error as exc:
+        app.logger.warning("Crediti per turno Copilot non leggibili: %s", exc)
+        return
+    for turn, nano_aiu in totals.items():
+        start = turns[turn][1]
+        end = turns[turn + 1][1] if turn + 1 < len(turns) else len(messages)
+        bot = next((message for message in reversed(messages[start:end])
+                    if message["role"] == "bot"), None)
+        if bot is not None:
+            bot["usage"] = {"ai_credits": nano_aiu / 1_000_000_000}
+
+
+def latest_message_usage(session_id):
+    chat = read_native_chat(session_id)
+    if chat is None or not chat["messages"] or chat["messages"][-1]["role"] != "bot":
+        return None
+    return chat["messages"][-1].get("usage")
+
+
 def session_display_name(name):
     return name.removeprefix("webchat:").strip()
 
@@ -364,6 +445,8 @@ def read_native_chat(session_id, include_messages=True):
                 content = event_data.get("content")
                 if not role or not isinstance(content, str) or not content.strip():
                     continue
+                if role == "user":
+                    content = content.removesuffix(image_response_prompt("", session_id))
                 timestamp = event.get("timestamp") or ""
                 model = event_data.get("model") if role == "bot" else None
                 if timestamp:
@@ -388,6 +471,8 @@ def read_native_chat(session_id, include_messages=True):
 
     if first_user is None:
         return None
+    if include_messages:
+        attach_message_usage(session_id, messages)
     try:
         modified_at = datetime.fromtimestamp(
             events_path.stat().st_mtime, timezone.utc
@@ -498,12 +583,175 @@ def require_login():
     return app.send_static_file("login.html")
 
 
+@app.before_request
+def protect_chat_job():
+    if not session.get("authenticated") or request.method != "POST":
+        return None
+    if request.path not in {
+        "/api/chat", "/api/chat/stream", "/api/chat/plan/approve",
+        "/api/chat/plan/cancel",
+    }:
+        return None
+    if service_restarting:
+        return jsonify({"error": "servizio in riavvio, attendi prima di inviare"}), 503
+    data = (request.get_json(silent=True) if request.is_json else request.form) or {}
+    if data.get("async") in (True, "true"):
+        job_id = data.get("request_id")
+        if not valid_session_id(job_id):
+            return jsonify({"error": "identificativo richiesta non valido"}), 400
+        row = get_db().execute("SELECT chat_id FROM chat_jobs WHERE id = ?", (job_id,)).fetchone()
+        if row:
+            session["copilot_session_id"] = row["chat_id"]
+            return jsonify({"job_id": job_id, "chat_id": row["chat_id"]}), 202
+    chat_id = data.get("chat_id") or session.get("copilot_session_id")
+    if chat_id and running_chat_job(chat_id):
+        return jsonify({"error": "Copilot sta gia' elaborando questa chat",
+                        "chat_id": chat_id}), 409
+
+
+def running_chat_job(chat_id):
+    row = get_db().execute(
+        "SELECT id FROM chat_jobs WHERE chat_id = ? AND status = 'running'", (chat_id,)
+    ).fetchone()
+    if row:
+        refresh_job(row["id"])
+        return get_db().execute(
+            "SELECT id FROM chat_jobs WHERE id = ? AND status = 'running'", (row["id"],)
+        ).fetchone()
+    return None
+
+
+def refresh_job(job_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM chat_jobs WHERE id = ?", (job_id,)).fetchone()
+    if row and row["status"] == "running":
+        try:
+            os.kill(row["owner_pid"], 0)
+        except ProcessLookupError:
+            result = {"type": "error", "chat_id": row["chat_id"],
+                      "error": "elaborazione interrotta dal riavvio del server; controlla la cronologia prima di riprovare"}
+            app.logger.warning("Lavoro Copilot interrotto: %s", job_id)
+            db.execute("UPDATE chat_jobs SET status = 'error', result = ? WHERE id = ?",
+                       (json.dumps(result), job_id))
+            db.commit()
+            row = db.execute("SELECT * FROM chat_jobs WHERE id = ?", (job_id,)).fetchone()
+        except PermissionError:
+            pass
+    return row
+
+
+def cleanup_job_files(attachments, args):
+    for attachment in attachments:
+        attachment.unlink(missing_ok=True)
+    if "--additional-mcp-config" in args:
+        Path(args[args.index("--additional-mcp-config") + 1].removeprefix("@")).unlink(missing_ok=True)
+
+
+def start_chat_job(data, chat_id, events, attachments=(), args=()):
+    with SERVICE_RESTART_LOCK:
+        if service_restarting:
+            cleanup_job_files(attachments, args)
+            return jsonify({"error": "servizio in riavvio, attendi prima di inviare"}), 503
+        return create_chat_job(data, chat_id, events, attachments, args)
+
+
+def create_chat_job(data, chat_id, events, attachments, args):
+    job_id = data.get("request_id")
+    db = get_db()
+    try:
+        db.execute(
+            "INSERT INTO chat_jobs (id, chat_id, status, owner_pid) VALUES (?, ?, 'running', ?)",
+            (job_id, chat_id, os.getpid()),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.rollback()
+        cleanup_job_files(attachments, args)
+        existing = db.execute("SELECT chat_id FROM chat_jobs WHERE id = ?", (job_id,)).fetchone()
+        if existing:
+            return jsonify({"job_id": job_id, "chat_id": existing["chat_id"]}), 202
+        return jsonify({"error": "Copilot sta gia' elaborando questa chat",
+                        "chat_id": chat_id}), 409
+
+    def work():
+        with app.app_context():
+            worker_db = get_db()
+            progress = {"content": "", "tools": []}
+            outcome = None
+            try:
+                for event in events():
+                    if not event.startswith("data: "):
+                        continue
+                    payload = json.loads(event.removeprefix("data: ").strip())
+                    kind = payload.get("type")
+                    if kind in ("done", "error"):
+                        outcome = payload
+                    elif kind == "assistant.message.delta":
+                        progress["content"] += payload.get("content") or ""
+                    elif kind == "tool.execution_start":
+                        progress["tools"] = (progress["tools"] + [payload])[-100:]
+                    worker_db.execute("UPDATE chat_jobs SET progress = ? WHERE id = ?",
+                                      (json.dumps(progress), job_id))
+                    worker_db.commit()
+                if outcome is None:
+                    raise RuntimeError("nessuna risposta ricevuta da Copilot")
+            except Exception:
+                app.logger.exception("Errore nel lavoro Copilot %s", job_id)
+                worker_db.rollback()
+                outcome = {"type": "error", "chat_id": chat_id,
+                           "error": "errore interno durante l'elaborazione di Copilot"}
+            finally:
+                cleanup_job_files(attachments, args)
+            worker_db.execute(
+                "UPDATE chat_jobs SET status = ?, result = ? WHERE id = ?",
+                (outcome["type"], json.dumps(outcome), job_id),
+            )
+            worker_db.commit()
+
+    worker = threading.Thread(target=work, name=f"copilot-{job_id}", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError:
+        app.logger.exception("Impossibile avviare il lavoro Copilot")
+        cleanup_job_files(attachments, args)
+        db.execute("UPDATE chat_jobs SET status = 'error', result = ? WHERE id = ?",
+                   (json.dumps({"type": "error", "chat_id": chat_id,
+                                "error": "impossibile avviare Copilot"}), job_id))
+        db.commit()
+        return jsonify({"error": "impossibile avviare Copilot"}), 500
+    return jsonify({"job_id": job_id, "chat_id": chat_id}), 202
+
+
+@app.route("/api/chat/jobs/<job_id>")
+def get_chat_job(job_id):
+    row = refresh_job(job_id)
+    if row is None:
+        return jsonify({"error": "richiesta non trovata"}), 404
+    return jsonify({"job_id": job_id, "chat_id": row["chat_id"],
+                    "status": row["status"], "progress": json.loads(row["progress"]),
+                    "result": json.loads(row["result"]) if row["result"] else None})
+
+
 @app.errorhandler(500)
 def handle_internal_error(error):
     app.logger.error("Errore interno nell'API: %s", error)
     if request.path.startswith("/api/"):
         return jsonify({"error": "errore interno del server"}), 500
     return error
+
+
+def image_response_prompt(prompt, chat_id):
+    image_dir = SESSION_STATE_DIR / chat_id / "files"
+    return (
+        prompt + "\n\n[Interfaccia webchat: puoi mostrare immagini con "
+        "![descrizione](https://...). Per immagini locali create su richiesta, "
+        f"salvale in {image_dir}/ (crea la directory se necessario) e usa "
+        f"![descrizione](/api/chats/{chat_id}/images/nome-file.png). "
+        "Formati locali supportati: PNG, JPEG, GIF, WebP, AVIF; non SVG. "
+        "Codifica spazi e caratteri speciali nel percorso URL. "
+        "Non usare percorsi locali o file:// nei messaggi. "
+        "Non creare immagini se non richieste e rispetta i permessi disponibili.]"
+    )
 
 
 def run_copilot(
@@ -515,7 +763,7 @@ def run_copilot(
     attachments: list[Path] | None = None,
 ) -> tuple[str, str | None, dict | None]:
     """Invoca Copilot e restituisce risposta, modello e statistiche d'uso."""
-    prompt = prompt.replace("\x00", "\\0")
+    prompt = image_response_prompt(prompt, copilot_session_id).replace("\x00", "\\0")
     args = [COPILOT_BIN]
     if is_new:
         args += ["--session-id", copilot_session_id]
@@ -630,6 +878,7 @@ def sse(event):
 
 
 def run_copilot_stream(args, prompt, chat_id, model, plan, attachments, is_approval=False):
+    prompt = image_response_prompt(prompt, chat_id)
     db = get_db()
     usage_fd, usage_path = tempfile.mkstemp(
         prefix="webchat-usage-", suffix=".json", dir=CONFIG_DIR
@@ -716,6 +965,7 @@ def run_copilot_stream(args, prompt, chat_id, model, plan, attachments, is_appro
                     db.execute("UPDATE chats SET pending_plan = NULL WHERE id = ?", (chat_id,))
             yield sse({"type": "done", "reply": reply, "model": used_model,
                        "usage": usage, "chat_id": chat_id, "ts": bot_ts,
+                       "message_usage": latest_message_usage(chat_id),
                        "pending_plan": plan})
     except (CopilotRunError, OSError, subprocess.SubprocessError) as exc:
         if not isinstance(exc, CopilotRunError):
@@ -770,6 +1020,32 @@ def validate_mcp_config(config):
     return {"command": command, "args": args, "env": env}
 
 
+@app.route("/api/chats/<chat_id>/images/<path:filename>")
+def chat_image(chat_id, filename):
+    if not valid_session_id(chat_id):
+        return jsonify({"error": "sessione non valida"}), 400
+    try:
+        session_dir = (SESSION_STATE_DIR / chat_id).resolve()
+        image_dir = (session_dir / "files").resolve()
+        image_path = (image_dir / filename).resolve()
+        if (session_dir != SESSION_STATE_DIR.resolve() / chat_id
+                or image_dir != session_dir / "files"
+                or not image_path.is_relative_to(image_dir)
+                or not image_path.is_file()):
+            return jsonify({"error": "immagine non trovata"}), 404
+        content_type = IMAGE_TYPES.get(image_path.suffix.lower())
+        if not content_type:
+            return jsonify({"error": "formato immagine non supportato"}), 415
+        response = send_file(image_path, mimetype=content_type, conditional=True)
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        return response
+    except (OSError, RuntimeError) as exc:
+        app.logger.error("Impossibile leggere l'immagine: %s", exc)
+        return jsonify({"error": "impossibile leggere l'immagine"}), 500
+
+
 @app.route("/")
 def index():
     return app.send_static_file("index.html")
@@ -790,6 +1066,60 @@ def login():
 def logout():
     session.clear()
     return jsonify({"ok": True})
+
+
+@app.route("/api/service", methods=["GET"])
+def service_status():
+    return jsonify({"instance_id": SERVICE_INSTANCE_ID,
+                    "restarting": service_restarting})
+
+
+@app.route("/api/service/restart", methods=["POST"])
+def restart_service():
+    global service_restarting
+    with SERVICE_RESTART_LOCK:
+        if service_restarting:
+            return jsonify({"error": "riavvio gia' in corso"}), 409
+        db = get_db()
+        running = db.execute(
+            "SELECT id FROM chat_jobs WHERE status = 'running'"
+        ).fetchall()
+        if any(refresh_job(row["id"])["status"] == "running" for row in running):
+            return jsonify({"error": "attendi che Copilot termini prima di riavviare"}), 409
+        if SESSION_STATE_DIR.exists() and any(
+            folder.is_dir() and session_is_running(folder)
+            for folder in SESSION_STATE_DIR.iterdir()
+        ):
+            return jsonify({"error": "una sessione Copilot e' in uso; attendi prima di riavviare"}), 409
+        try:
+            result = subprocess.run(
+                ["/usr/bin/systemctl", "show", "copilot-webchat.service",
+                 "--property=MainPID,Restart"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            app.logger.exception("Impossibile verificare il servizio systemd")
+            return jsonify({"error": "impossibile verificare il servizio systemd"}), 503
+        properties = dict(line.split("=", 1) for line in result.stdout.splitlines()
+                          if "=" in line)
+        if (result.returncode != 0
+                or properties.get("MainPID") != str(os.getpid())
+                or properties.get("Restart") not in {"always", "on-failure"}):
+            app.logger.warning("Riavvio non disponibile: supervisione systemd non verificata")
+            return jsonify({"error": "riavvio disponibile solo con copilot-webchat.service "
+                            "e Restart=on-failure o always"}), 503
+        # Esce dopo la risposta HTTP; systemd avvia una nuova istanza senza sudo.
+        timer = threading.Timer(1.5, os._exit, args=(1,))
+        timer.daemon = True
+        service_restarting = True
+        try:
+            timer.start()
+        except RuntimeError:
+            service_restarting = False
+            app.logger.exception("Impossibile programmare il riavvio")
+            return jsonify({"error": "impossibile programmare il riavvio"}), 500
+        app.logger.warning("Riavvio del servizio richiesto dalla webchat")
+        return jsonify({"ok": True, "instance_id": SERVICE_INSTANCE_ID}), 202
 
 
 @app.route("/api/chats", methods=["GET"])
@@ -886,6 +1216,8 @@ def update_chat_title(chat_id):
 
 @app.route("/api/chats/<chat_id>", methods=["DELETE"])
 def delete_chat(chat_id):
+    if running_chat_job(chat_id):
+        return jsonify({"error": "sessione Copilot in uso"}), 409
     native_chat = read_native_chat(chat_id, include_messages=False)
     if native_chat is None:
         return jsonify({"error": "chat non trovata"}), 404
@@ -901,6 +1233,7 @@ def delete_chat(chat_id):
         app.logger.error("Impossibile eliminare la sessione Copilot %s: %s", chat_id, exc)
         return jsonify({"error": "impossibile eliminare la sessione Copilot"}), 500
     db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    db.execute("DELETE FROM chat_jobs WHERE chat_id = ?", (chat_id,))
     db.commit()
     if session.get("copilot_session_id") == chat_id:
         session.pop("copilot_session_id", None)
@@ -1088,10 +1421,15 @@ def chat_stream():
             app.logger.error("Impossibile salvare l'allegato: %s", exc)
             return jsonify({"error": "impossibile salvare il file allegato"}), 500
         return jsonify({"error": str(exc)}), 400
-    is_new = "copilot_session_id" not in session
-    if is_new:
-        session["copilot_session_id"] = str(uuid.uuid4())
-    chat_id = session["copilot_session_id"]
+    chat_id = data.get("chat_id") or session.get("copilot_session_id")
+    if chat_id and not valid_session_id(chat_id):
+        for path in attachments:
+            path.unlink(missing_ok=True)
+        return jsonify({"error": "sessione non valida"}), 400
+    if not chat_id:
+        chat_id = str(uuid.uuid4())
+    session["copilot_session_id"] = chat_id
+    is_new = not (SESSION_STATE_DIR / chat_id).is_dir()
     row = db.execute("SELECT model, pending_plan, tool_permissions, mcp_servers FROM chats WHERE id = ?",
                      (chat_id,)).fetchone()
     if row and row["pending_plan"]:
@@ -1132,6 +1470,8 @@ def chat_stream():
             plan, attachments
         )
 
+    if data.get("async") == "true":
+        return start_chat_job(data, chat_id, stream_with_chat, attachments, args)
     stream = stream_with_chat()
     return Response(stream_with_context(stream), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -1142,7 +1482,7 @@ def approve_plan():
     data = request.get_json(silent=True) or {}
     if (error := require_advanced(data)):
         return error
-    chat_id = session.get("copilot_session_id")
+    chat_id = data.get("chat_id") or session.get("copilot_session_id")
     db = get_db()
     row = (db.execute("SELECT model, permissions, pending_plan, tool_permissions "
                       "FROM chats WHERE id = ?", (chat_id,)).fetchone() if chat_id else None)
@@ -1154,6 +1494,13 @@ def approve_plan():
     args = advanced_args(chat_id, False, model, json.loads(row["permissions"]), [],
                          json.loads(row["tool_permissions"]),
                          selected_mcp_servers(db, chat_id), False, is_approval=True)
+    if data.get("async") is True:
+        return start_chat_job(
+            data, chat_id,
+            lambda: run_copilot_stream(args, prompt, chat_id, model, False, [],
+                                       is_approval=True),
+            args=args,
+        )
     outcome = None
     for event in run_copilot_stream(args, prompt, chat_id, model, False, [], is_approval=True):
         if not event.startswith("data: "):
@@ -1198,6 +1545,40 @@ def command():
         return jsonify({"error": "comando non valido"}), 400
     db = get_db()
     chat_id = session.get("copilot_session_id")
+    if parts[0] == "/model" and len(parts) == 1:
+        try:
+            result = subprocess.run(
+                [COPILOT_BIN, "completion", "bash"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            app.logger.error("Impossibile leggere i modelli di Copilot: %s", exc)
+            return jsonify({"error": "impossibile caricare i modelli di Copilot"}), 503
+        if result.returncode != 0:
+            app.logger.error(
+                "Elenco modelli CLI non disponibile: %s",
+                (result.stderr or result.stdout).strip(),
+            )
+            return jsonify({"error": "impossibile caricare i modelli di Copilot"}), 503
+        match = re.search(
+            r'--model\)\s*COMPREPLY=\(\$\(compgen -W "([^"]+)" --',
+            result.stdout,
+        )
+        if not match:
+            app.logger.error("Formato completamento modelli CLI non riconosciuto")
+            return jsonify({"error": "impossibile leggere l'elenco modelli di Copilot"}), 503
+        models = list(dict.fromkeys(
+            model for model in match.group(1).split()
+            if re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model)
+        ))
+        if "auto" not in models:
+            models.insert(0, "auto")
+        if len(models) == 1:
+            app.logger.error("Elenco modelli CLI vuoto")
+            return jsonify({"error": "elenco modelli di Copilot vuoto"}), 503
+        return jsonify({"reply": "Modelli caricati", "models": models})
     if parts[0] == "/model" and len(parts) == 2:
         model = parts[1].strip()
         if not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", model):
@@ -1258,10 +1639,15 @@ def chat():
         app.logger.error("Impossibile salvare il file allegato: %s", exc)
         return jsonify({"error": "impossibile salvare il file allegato"}), 500
 
-    is_new = "copilot_session_id" not in session
-    if is_new:
-        session["copilot_session_id"] = str(uuid.uuid4())
-    copilot_session_id = session["copilot_session_id"]
+    copilot_session_id = data.get("chat_id") or session.get("copilot_session_id")
+    if copilot_session_id and not valid_session_id(copilot_session_id):
+        for attachment in attachments:
+            attachment.unlink(missing_ok=True)
+        return jsonify({"error": "sessione non valida"}), 400
+    if not copilot_session_id:
+        copilot_session_id = str(uuid.uuid4())
+    session["copilot_session_id"] = copilot_session_id
+    is_new = not (SESSION_STATE_DIR / copilot_session_id).is_dir()
 
     db = get_db()
     now = datetime.now(timezone.utc).isoformat()
@@ -1282,10 +1668,16 @@ def chat():
     model = pinned_model or model
     db.commit()
 
+    prompt = (message or "Analizza i file allegati.") + "".join(text_attachments)
+    if data.get("async") in (True, "true"):
+        return start_chat_job(
+            data, copilot_session_id,
+            lambda: normal_chat_events(prompt, copilot_session_id, is_new,
+                                       model, permissions, copilot_attachments, now),
+            attachments,
+        )
+
     try:
-        prompt = message or "Analizza i file allegati."
-        if text_attachments:
-            prompt += "".join(text_attachments)
         reply, used_model, usage = run_copilot(
             prompt,
             copilot_session_id,
@@ -1329,16 +1721,42 @@ def chat():
             "chat_id": copilot_session_id,
             "model": used_model,
             "usage": usage,
+            "message_usage": latest_message_usage(copilot_session_id),
             "user_ts": now,
             "ts": bot_ts,
         }
     )
 
 
+def normal_chat_events(prompt, chat_id, is_new, model, permissions, attachments, user_ts):
+    try:
+        reply, used_model, usage = run_copilot(
+            prompt, chat_id, is_new, model, permissions, attachments
+        )
+        db = get_db()
+        model_to_pin = used_model or (model if model != "auto" else None)
+        if model_to_pin:
+            db.execute("UPDATE chats SET model = COALESCE(model, ?) WHERE id = ?",
+                       (model_to_pin, chat_id))
+        db.commit()
+        yield sse({"type": "done", "reply": reply, "model": used_model,
+                   "usage": usage, "chat_id": chat_id, "user_ts": user_ts,
+                   "message_usage": latest_message_usage(chat_id),
+                   "ts": datetime.now(timezone.utc).isoformat()})
+    except CopilotRunError as exc:
+        yield sse({"type": "error", "error": str(exc), "chat_id": chat_id,
+                   "usage": exc.usage})
+    except (OSError, subprocess.SubprocessError):
+        app.logger.exception("Impossibile eseguire Copilot")
+        yield sse({"type": "error", "error": "impossibile eseguire Copilot",
+                   "chat_id": chat_id})
+
+
 @app.route("/api/new-chat", methods=["POST"])
 def new_chat():
-    session.pop("copilot_session_id", None)
-    return jsonify({"ok": True})
+    chat_id = str(uuid.uuid4())
+    session["copilot_session_id"] = chat_id
+    return jsonify({"ok": True, "chat_id": chat_id})
 
 
 if __name__ == "__main__":
