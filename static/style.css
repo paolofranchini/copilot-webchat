@@ -21,7 +21,7 @@ html, body {
 .app {
   display: flex;
   height: 100vh;
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
   width: 100%;
   margin: 0 auto;
 }
@@ -77,20 +77,6 @@ html, body {
   font-size: 13px;
   margin: 0;
 }
-.advanced-switch {
-  color: var(--text);
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
-.advanced-switch input { accent-color: var(--accent); }
-.settings-advanced {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
 .settings-view textarea, .settings-view input:not([type="checkbox"]) {
   width: 100%;
   min-width: 0;
@@ -102,7 +88,7 @@ html, body {
   font: inherit;
 }
 .settings-view textarea { resize: vertical; }
-.settings-view button, .advanced-attachments button, .plan-actions button, .slash-suggestions button {
+.settings-view button, .plan-actions button, .slash-suggestions button {
   border: 1px solid #3a3f4f;
   border-radius: 6px;
   padding: 5px 7px;
@@ -110,12 +96,10 @@ html, body {
   background: #303646;
   cursor: pointer;
 }
-.settings-view button:disabled, .advanced-attachments button:disabled,
-.plan-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.settings-view button:disabled, .plan-actions button:disabled { opacity: .5; cursor: not-allowed; }
 .sidebar-form { display: flex; flex-direction: column; gap: 6px; }
 .mcp-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 0; border-bottom: 1px solid #3a3f4f; }
 .mcp-row label { flex-basis: 100%; overflow-wrap: anywhere; }
-.permission-select small { color: var(--muted); }
 .chat-notice { padding: 6px 16px; background: #4a2323; color: #ffb4b4; font-size: 12px; }
 .activity-log { align-self: flex-start; max-width: 85%; font-size: 12px; color: var(--muted); }
 .tool-activity { margin: 3px 0; overflow-wrap: anywhere; }
@@ -130,7 +114,6 @@ html, body {
   color: inherit;
   cursor: pointer;
 }
-.advanced-attachments { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; font-size: 12px; }
 .slash-suggestions { display: flex; gap: 5px; flex-wrap: wrap; padding: 6px 16px; background: var(--panel); }
 .new-chat-btn, .logout-btn {
   background: transparent;
@@ -233,28 +216,6 @@ html, body {
   background: #0e0f13;
   color: var(--text);
   font-size: 12px;
-}
-
-.permission-select {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0;
-  padding: 8px;
-  border: 1px solid #3a3f4f;
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 12.1px;
-}
-.permission-select legend {
-  padding: 0 3px;
-}
-.permission-select label {
-  cursor: pointer;
-}
-.permission-select input {
-  accent-color: var(--accent);
-  margin: 0 4px 0 0;
 }
 
 .main {
@@ -435,6 +396,25 @@ header h1 {
   color: var(--muted);
 }
 
+.message-attachment-previews {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.message-attachment-previews:first-child {
+  margin-top: 0;
+}
+
+.message-attachment-previews img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
 .msg h1, .msg h2, .msg h3, .msg h4, .msg h5, .msg h6 {
   line-height: 1.25;
   margin: 0.35em 0 0.25em;
@@ -476,7 +456,7 @@ header h1 {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #E6E6E6;
+  background: #b0b0b0;
   animation: thinking-dot 1.4s ease-in-out infinite;
 }
 
@@ -484,7 +464,7 @@ header h1 {
 .thinking-dots span:nth-child(3) { animation-delay: 0.32s; }
 
 @keyframes thinking-dot {
-  0%, 60%, 100% { background: #E6E6E6; transform: translateY(0); }
+  0%, 60%, 100% { background: #b0b0b0; transform: translateY(0); }
   30% { background: #FFFFFF; transform: translateY(-3px); }
 }
 
@@ -497,6 +477,7 @@ header h1 {
   padding: 1px 5px;
   border-radius: 4px;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.85em;
 }
 
 .msg pre {

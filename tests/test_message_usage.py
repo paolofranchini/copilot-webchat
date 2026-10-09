@@ -77,22 +77,35 @@ class MessageUsageTests(unittest.TestCase):
             self.assertNotIn("usage", messages[index])
         self.assertIsNone(self.backend.latest_message_usage(self.chat_id))
 
-    def test_live_reply_and_reloaded_history_have_same_credits(self):
+    def test_reloaded_history_shows_the_turn_credit_total(self):
         self.write_chat([
             ("user", "2026-10-07T10:00:00Z", "ciao"),
             ("assistant", "2026-10-07T10:00:05Z", "risposta"),
         ])
         self.billing([("2026-10-07T10:00:04Z", 1234567890)])
-        with patch.object(self.backend, "run_copilot",
-                          return_value=("risposta", "gpt-test", {"ai_credits": 99})):
-            response = self.client.post("/api/chat", json={
-                "chat_id": self.chat_id, "message": "ciao"
-            })
+        response = self.client.get(f"/api/chats/{self.chat_id}")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json["usage"]["ai_credits"], 99)
-        self.assertEqual(response.json["message_usage"]["ai_credits"], 1.23456789)
-        self.assertEqual(self.client.get(f"/api/chats/{self.chat_id}").json[-1]["usage"],
-                         response.json["message_usage"])
+        self.assertEqual(response.json[-1]["usage"], {"ai_credits": 1.23456789})
+
+    def test_reloaded_history_uses_database_auto_model_provenance(self):
+        self.write_chat([
+            ("user", "2026-10-07T10:00:00Z", "ciao"),
+            ("assistant", "2026-10-07T10:00:05Z", "risposta auto"),
+            ("user", "2026-10-07T10:01:00Z", "esplicito"),
+            ("assistant", "2026-10-07T10:01:05Z", "risposta esplicita"),
+        ])
+        with self.backend.app.app_context():
+            db = self.backend.get_db()
+            self.backend.mark_auto_model_response(
+                db, self.chat_id, "2026-10-07T10:00:05Z"
+            )
+            db.commit()
+        response = self.client.get(f"/api/chats/{self.chat_id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [message["auto_model"] for message in response.json],
+            [False, True, False, False],
+        )
 
     def test_missing_timestamps_and_database_do_not_invent_zero(self):
         self.write_chat([("user", "", "ciao"), ("assistant", "", "risposta")])

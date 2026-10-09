@@ -54,7 +54,9 @@ class ServiceRestartTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][0], "/usr/bin/systemctl")
         self.assertTrue(self.client.get("/api/service").json["restarting"])
         self.assertEqual(self.client.post("/api/service/restart").status_code, 409)
-        self.assertEqual(self.client.post("/api/chat", data={"message": "ciao"}).status_code, 503)
+        self.assertEqual(self.client.post(
+            "/api/chat/stream", data={"message": "ciao"}
+        ).status_code, 503)
         with self.backend.app.app_context():
             result = self.backend.start_chat_job({}, str(uuid.uuid4()), lambda: [])
             self.assertEqual(result[1], 503)

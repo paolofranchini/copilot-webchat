@@ -22,6 +22,7 @@
         <select data-permission-mode>
           <option value="ask">Ask</option>
           <option value="edit">Edit</option>
+          <option value="plan">Plan</option>
           <option value="agent">Agent</option>
         </select>
       </label>
@@ -40,45 +41,12 @@
         <div class="settings-grid">
           <section class="settings-card" aria-labelledby="generalTitle">
             <h3 id="generalTitle">Generali</h3>
-            <label class="advanced-switch"><input id="advancedModeToggle" type="checkbox"> Modalità avanzata</label>
-            <p>Questa scelta vale per questo browser. La chat normale rimane invariata quando è disattivata.</p>
             <p>La sidebar mostra le sessioni native di Copilot. Eliminare una sessione rimuove definitivamente i relativi file e la cronologia.</p>
             <button id="restartServiceBtn" type="button">Riavvia servizio</button>
             <p>Applica gli aggiornamenti del backend. Richiede il servizio systemd e nessuna sessione Copilot in esecuzione.</p>
             <p id="restartServiceStatus" role="status" aria-live="polite" hidden></p>
           </section>
-          <section class="settings-card" aria-labelledby="chatSettingsTitle">
-            <h3 id="chatSettingsTitle">Chat <span id="settingsChatName">nuova</span></h3>
-            <p>Le autorizzazioni si applicano alla chat selezionata; per una nuova chat vengono salvate al primo messaggio.</p>
-            <label class="model-select" for="settingsModelSelect">
-              <span data-model-label>Modello nuova chat</span>
-              <select id="settingsModelSelect" disabled aria-label="Modello chat"></select>
-            </label>
-            <label class="model-select">
-              Modalità chat
-              <select data-permission-mode>
-                <option value="ask">Ask</option>
-                <option value="edit">Edit</option>
-                <option value="agent">Agent</option>
-              </select>
-              <small>Ask: nessun tool. Edit: comandi e file. Agent: tutti i permessi in modalità autonoma.</small>
-            </label>
-            <div class="settings-advanced" data-advanced hidden>
-              <label class="advanced-switch"><input id="planToggle" type="checkbox"> Modalità piano (prossimo invio)</label>
-              <fieldset class="permission-select">
-                <legend>Tool specifici</legend>
-                <label for="toolPermissions">Pattern CLI esatti, uno per riga (es. shell(git status)). Per una nuova chat saranno salvati al primo messaggio; non è un'approvazione interattiva.</label>
-                <textarea id="toolPermissions" rows="3" placeholder="shell(git status)"></textarea>
-                <button id="saveToolPermissions" type="button">Salva tool</button>
-              </fieldset>
-              <fieldset class="permission-select">
-                <legend>Server MCP per questa chat</legend>
-                <div id="mcpList"></div>
-                <small>Configura i server qui sotto, poi seleziona quelli da usare nella chat.</small>
-              </fieldset>
-            </div>
-          </section>
-          <section class="settings-card general-advanced" data-advanced hidden aria-labelledby="mcpSettingsTitle">
+          <section class="settings-card" aria-labelledby="mcpSettingsTitle">
             <h3 id="mcpSettingsTitle">Server MCP disponibili</h3>
             <div id="mcpConfigList"></div>
             <form id="mcpForm" class="sidebar-form">
@@ -87,7 +55,7 @@
               <button type="submit">Aggiungi server</button>
             </form>
           </section>
-          <section class="settings-card general-advanced" data-advanced hidden aria-labelledby="skillsSettingsTitle">
+          <section class="settings-card" aria-labelledby="skillsSettingsTitle">
             <h3 id="skillsSettingsTitle">Skill e plugin disponibili</h3>
             <div id="skillsList">Caricamento...</div>
             <small>Gestiti dalla CLI; non attivabili per singola chat.</small>
@@ -102,14 +70,9 @@
             <small>Qualsiasi tipo di file · massimo 10 MB ciascuno</small>
           </div>
           <div id="attachmentPreviews" class="attachment-previews"></div>
-          <div class="advanced-attachments" data-advanced hidden>
-            <button id="screenshotBtn" type="button">Scatta screenshot</button>
-            <button id="dictationBtn" type="button">Dettatura</button>
-            <span id="dictationStatus" role="status" aria-live="polite"></span>
-          </div>
           <input id="attachmentInput" type="file" name="files" multiple hidden>
         </div>
-        <div id="slashSuggestions" class="slash-suggestions" data-advanced hidden></div>
+        <div id="slashSuggestions" class="slash-suggestions" hidden></div>
         <div id="chatUsage" class="chat-usage-summary" aria-live="polite"></div>
         <form id="chatForm" class="input-bar">
           <button type="button" id="attachmentBtn" class="attachment-btn" aria-label="Allega file" aria-expanded="false">+</button>

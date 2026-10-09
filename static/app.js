@@ -6,14 +6,12 @@ const newChatBtn = document.getElementById("newChatBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsView = document.getElementById("settingsView");
 const chatView = document.getElementById("chatView");
-const settingsChatName = document.getElementById("settingsChatName");
 const logoutBtn = document.getElementById("logoutBtn");
 const chatListEl = document.getElementById("chatList");
 const sidebar = document.getElementById("sidebar");
 const menuBtn = document.getElementById("menuBtn");
 const closeSidebarBtn = document.getElementById("closeSidebarBtn");
 const modelSelect = document.getElementById("modelSelect");
-const settingsModelSelect = document.getElementById("settingsModelSelect");
 const chatUsageEl = document.getElementById("chatUsage");
 const permissionModeSelects = document.querySelectorAll("[data-permission-mode]");
 const attachmentBtn = document.getElementById("attachmentBtn");
@@ -21,78 +19,44 @@ const attachmentPicker = document.getElementById("attachmentPicker");
 const attachmentInput = document.getElementById("attachmentInput");
 const attachmentDropzone = document.getElementById("attachmentDropzone");
 const attachmentPreviews = document.getElementById("attachmentPreviews");
-const advancedModeToggle = document.getElementById("advancedModeToggle");
-const planToggle = document.getElementById("planToggle");
 const chatNotice = document.getElementById("chatNotice");
-const toolPermissionsInput = document.getElementById("toolPermissions");
-const mcpList = document.getElementById("mcpList");
 const mcpConfigList = document.getElementById("mcpConfigList");
 const skillsList = document.getElementById("skillsList");
 const slashSuggestions = document.getElementById("slashSuggestions");
-const dictationStatus = document.getElementById("dictationStatus");
 
 let currentChatId = null;
 let pendingChatId = null;
 let attachedFiles = [];
 let busy = false;
 let mcpServers = [];
-let selectedMcpServers = [];
 let pendingPlan = false;
 let activeJob = null;
 let jobController = null;
 let wakeJob = null;
+let lastPermissionMode = "ask";
+let chatOpenRequest = 0;
 const chatPermissions = new Map();
 const chatUsages = new Map();
 const chatPlans = new Map();
 const chatModels = new Map();
-const chatMcpServers = new Map();
-const chatTools = new Map();
 const mobileLayout = window.matchMedia("(max-width: 700px)");
-document.getElementById("saveToolPermissions").disabled = true;
-
-function syncToolControls() {
-  toolPermissionsInput.disabled = !advancedEnabled() || busy;
-  document.getElementById("saveToolPermissions").disabled = !currentChatId || busy;
-}
-
-function selectedTools() {
-  return [...new Set(toolPermissionsInput.value.split("\n").map((tool) => tool.trim()).filter(Boolean))];
-}
+localStorage.removeItem("copilot-auto-model-responses");
 
 function showNotice(message) {
   chatNotice.textContent = message;
   chatNotice.hidden = !message;
 }
 
-function advancedEnabled() {
-  return advancedModeToggle.checked;
-}
-
-function syncAdvancedMode() {
-  syncToolControls();
-  document.querySelectorAll("[data-advanced]").forEach((element) => {
-    element.hidden = !advancedEnabled();
-  });
-  if (!advancedEnabled()) planToggle.checked = false;
-  document.querySelectorAll(".plan-actions").forEach((element) => {
-    element.hidden = !advancedEnabled();
-  });
-  if (advancedEnabled() && pendingPlan && currentChatId
+function syncChatFeatures() {
+  if (pendingPlan && currentChatId
     && !messagesEl.querySelector(".plan-actions")) {
     const planMessage = messagesEl.querySelector(".pending-plan-message");
     if (planMessage) attachPlanActions(planMessage);
   }
-  if (advancedEnabled()) {
-    loadMcpServers();
-    loadSkills();
-  }
+  loadMcpServers();
+  loadSkills();
   updateSlashSuggestions();
 }
-advancedModeToggle.checked = localStorage.getItem("copilot-advanced-mode") === "true";
-advancedModeToggle.addEventListener("change", () => {
-  localStorage.setItem("copilot-advanced-mode", String(advancedEnabled()));
-  syncAdvancedMode();
-});
 
 function syncSidebarWithViewport() {
   if (mobileLayout.matches) {
@@ -102,19 +66,30 @@ function syncSidebarWithViewport() {
   }
 }
 
+function syncAppHeight() {
+  const viewport = window.visualViewport;
+  if (mobileLayout.matches && viewport && viewport.height > 0) {
+    document.documentElement.style.setProperty("--app-height", `${viewport.height}px`);
+  } else {
+    document.documentElement.style.removeProperty("--app-height");
+  }
+}
+
 syncSidebarWithViewport();
+syncAppHeight();
 mobileLayout.addEventListener("change", syncSidebarWithViewport);
+mobileLayout.addEventListener("change", syncAppHeight);
+window.visualViewport?.addEventListener("resize", syncAppHeight);
+window.addEventListener("resize", syncAppHeight);
 
 function setModelControls(model, isChat = Boolean(currentChatId)) {
-  for (const select of [modelSelect, settingsModelSelect]) {
-    if (![...select.options].some((option) => option.value === model)) {
-      const option = document.createElement("option");
-      option.value = model;
-      option.textContent = model;
-      select.append(option);
-    }
-    select.value = model;
+  if (![...modelSelect.options].some((option) => option.value === model)) {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model;
+    modelSelect.append(option);
   }
+  modelSelect.value = model;
   document.querySelectorAll("[data-model-label]").forEach((label) => {
     label.textContent = isChat ? "Modello chat" : "Modello nuova chat";
   });
@@ -133,67 +108,64 @@ async function loadModels() {
     const selectedModel = currentChatId
       ? chatModels.get(currentChatId) || modelSelect.value || savedModel
       : modelSelect.value || savedModel;
-    for (const select of [modelSelect, settingsModelSelect]) {
-      const model = select.value || selectedModel;
-      select.replaceChildren();
-      for (const id of data.models) {
-        const option = document.createElement("option");
-        option.value = id;
-        option.textContent = id === "auto" ? "Auto" : id;
-        select.append(option);
-      }
-      if (!data.models.includes(model)) {
-        const option = document.createElement("option");
-        option.value = model;
-        option.textContent = model;
-        select.append(option);
-      }
-      select.value = model;
-      select.disabled = false;
+    const model = modelSelect.value || selectedModel;
+    modelSelect.replaceChildren();
+    for (const id of data.models) {
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = id === "auto" ? "Auto" : id;
+      modelSelect.append(option);
     }
+    if (!data.models.includes(model)) {
+      const option = document.createElement("option");
+      option.value = model;
+      option.textContent = model;
+      modelSelect.append(option);
+    }
+    modelSelect.value = model;
+    modelSelect.disabled = false;
     setModelControls(selectedModel, Boolean(currentChatId));
     showNotice("");
   } catch (err) {
-    for (const select of [modelSelect, settingsModelSelect]) select.disabled = true;
+    modelSelect.disabled = true;
     showNotice(err.message);
   }
 }
 let modelUpdating = false;
-for (const select of [modelSelect, settingsModelSelect]) {
-  select.addEventListener("change", async () => {
-    if (modelUpdating) return;
-    const previousDefault = localStorage.getItem("copilot-model") || "auto";
-    const previousSelection = modelSelect.value;
-    const model = select.value;
-    setModelControls(model);
-    localStorage.setItem("copilot-model", model);
-    if (!currentChatId) return;
+modelSelect.addEventListener("change", async () => {
+  if (modelUpdating) return;
+  const previousDefault = localStorage.getItem("copilot-model") || "auto";
+  const previousSelection = modelSelect.value;
+  const model = modelSelect.value;
+  setModelControls(model);
+  localStorage.setItem("copilot-model", model);
+  if (!currentChatId) return;
 
-    const chatId = currentChatId;
-    modelUpdating = true;
-    for (const control of [modelSelect, settingsModelSelect]) control.disabled = true;
-    try {
-      const data = await jsonRequest("/api/command", "POST", {
-        command: `/model ${model}`,
-      });
-      chatModels.set(chatId, data.model);
-      showNotice(data.reply);
-      loadChatList();
-    } catch (err) {
-      const activeModel = currentChatId === chatId
-        ? chatModels.get(chatId) || previousSelection
-        : currentChatId ? chatModels.get(currentChatId) || modelSelect.value : previousDefault;
-      setModelControls(activeModel, Boolean(currentChatId));
-      localStorage.setItem("copilot-model", previousDefault);
-      showNotice(err.message);
-    } finally {
-      modelUpdating = false;
-      for (const control of [modelSelect, settingsModelSelect]) control.disabled = false;
-    }
-  });
-}
+  const chatId = currentChatId;
+  modelUpdating = true;
+  modelSelect.disabled = true;
+  try {
+    const data = await jsonRequest("/api/command", "POST", {
+      command: `/model ${model}`,
+    });
+    chatModels.set(chatId, data.model);
+    showNotice(data.reply);
+    loadChatList();
+  } catch (err) {
+    const activeModel = currentChatId === chatId
+      ? chatModels.get(chatId) || previousSelection
+      : currentChatId ? chatModels.get(currentChatId) || modelSelect.value : previousDefault;
+    setModelControls(activeModel, Boolean(currentChatId));
+    localStorage.setItem("copilot-model", previousDefault);
+    showNotice(err.message);
+  } finally {
+    modelUpdating = false;
+    modelSelect.disabled = false;
+  }
+});
 
 function showSettings(open) {
+  if (open) chatOpenRequest += 1;
   settingsView.hidden = !open;
   chatView.hidden = open;
   settingsBtn.classList.toggle("active", open);
@@ -208,7 +180,6 @@ function showSettings(open) {
 }
 
 settingsBtn.addEventListener("click", () => {
-  if (busy) return;
   showSettings(true);
 });
 
@@ -274,23 +245,29 @@ restartServiceBtn.addEventListener("click", async () => {
 });
 
 function selectedPermissions() {
-  const mode = permissionModeSelects[0]?.value || "ask";
+  const selectedMode = permissionModeSelects[0]?.value || "ask";
+  const mode = selectedMode === "plan" ? lastPermissionMode : selectedMode;
   if (mode === "agent") return ["all"];
   if (mode === "edit") return ["shell", "write"];
   return [];
 }
 
 function syncPermissions(permissions) {
-  const mode = permissions.includes("all")
+  lastPermissionMode = permissions.includes("all")
     ? "agent"
     : permissions.includes("shell") || permissions.includes("write") ? "edit" : "ask";
-  permissionModeSelects.forEach((select) => { select.value = mode; });
+  permissionModeSelects.forEach((select) => { select.value = lastPermissionMode; });
 }
 
 permissionModeSelects.forEach((select) => {
   select.addEventListener("change", async () => {
-    const previous = currentChatId ? (chatPermissions.get(currentChatId) || []) : null;
     const mode = select.value;
+    if (mode === "plan") {
+      showNotice("");
+      return;
+    }
+    lastPermissionMode = mode;
+    const previous = currentChatId ? (chatPermissions.get(currentChatId) || []) : null;
     const permissions = mode === "agent" ? ["all"]
       : mode === "edit" ? ["shell", "write"] : [];
     syncPermissions(permissions);
@@ -308,13 +285,10 @@ permissionModeSelects.forEach((select) => {
 });
 
 async function jsonRequest(url, method, body) {
-  const payload = (url.startsWith("/api/mcp-servers") || url.endsWith("/mcp-servers")
-    || url.endsWith("/tool-permissions"))
-    ? { ...body, advanced: true } : body;
   const res = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
   if (res.status === 401) {
     window.location.href = "/login.html";
@@ -445,7 +419,11 @@ function formatMessageTime(ts) {
   return date.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
 }
 
-function addMessage(text, cls, model, ts, usage) {
+function displayUserMessage(text) {
+  return text === "Analizza i file allegati.\n🖼️" ? "🖼️" : text;
+}
+
+function addMessage(text, cls, model, ts, usage, attachments = [], autoModel = false) {
   const el = document.createElement("div");
   el.className = `msg ${cls}`;
   if (el.classList.contains("pending")) {
@@ -473,6 +451,21 @@ function addMessage(text, cls, model, ts, usage) {
     });
   } else {
     el.textContent = text;
+    const imageFiles = attachments.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length) {
+      const previews = document.createElement("div");
+      previews.className = "message-attachment-previews";
+      imageFiles.forEach((file) => {
+        const image = document.createElement("img");
+        const imageUrl = URL.createObjectURL(file);
+        image.src = imageUrl;
+        image.alt = file.name;
+        image.addEventListener("load", () => URL.revokeObjectURL(imageUrl), { once: true });
+        image.addEventListener("error", () => URL.revokeObjectURL(imageUrl), { once: true });
+        previews.appendChild(image);
+      });
+      el.appendChild(previews);
+    }
   }
   if (!cls.includes("pending") && !cls.includes("error")) {
     const metadata = document.createElement("div");
@@ -480,8 +473,8 @@ function addMessage(text, cls, model, ts, usage) {
     if (model) {
       const tag = document.createElement("span");
       tag.className = "model-tag";
-      tag.textContent = model;
-      tag.title = model;
+      tag.textContent = `${model}${autoModel ? " (Auto)" : ""}`;
+      tag.title = tag.textContent;
       metadata.appendChild(tag);
     }
     const credits = formatChatUsage(usage, true);
@@ -599,6 +592,37 @@ attachmentDropzone.addEventListener("keydown", (event) => {
   }
 });
 attachmentInput.addEventListener("change", () => addAttachments(attachmentInput.files));
+input.addEventListener("paste", (event) => {
+  const supportedExtensions = {
+    "image/avif": "avif",
+    "image/gif": "gif",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+  };
+  const imageFiles = Array.from(event.clipboardData?.items || [])
+    .filter((item) => item.kind === "file" && supportedExtensions[item.type])
+    .map((item, index) => {
+      const file = item.getAsFile();
+      if (!file) return null;
+      return new File([file], `immagine-incollata-${Date.now()}-${index + 1}.${supportedExtensions[item.type]}`, {
+        type: item.type,
+        lastModified: Date.now(),
+      });
+    })
+    .filter(Boolean);
+  if (!imageFiles.length) return;
+
+  event.preventDefault();
+  const pastedText = event.clipboardData.getData("text/plain");
+  if (pastedText) {
+    input.setRangeText(pastedText, input.selectionStart, input.selectionEnd, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  addAttachments(imageFiles);
+  attachmentPicker.hidden = false;
+  attachmentBtn.setAttribute("aria-expanded", "true");
+});
 attachmentDropzone.addEventListener("dragover", (event) => {
   event.preventDefault();
   attachmentDropzone.classList.add("dragging");
@@ -614,8 +638,12 @@ attachmentDropzone.addEventListener("drop", (event) => {
 
 function updateSlashSuggestions() {
   const value = input.value.trimStart();
-  const commands = ["/help", "/usage", "/model "];
-  const matches = advancedEnabled() && value.startsWith("/")
+  const commands = [
+    "/help", "/usage", "/model ",
+    "/chronicle standup", "/chronicle tips", "/chronicle cost-tips",
+    "/chronicle search ", "/chronicle improve",
+  ];
+  const matches = value.startsWith("/")
     ? commands.filter((command) => command.startsWith(value) || value === "/")
     : [];
   slashSuggestions.replaceChildren();
@@ -635,41 +663,32 @@ function updateSlashSuggestions() {
 }
 input.addEventListener("input", updateSlashSuggestions);
 
+function chroniclePrompt(text) {
+  const match = text.trim().match(/^\/chronicle\s+(\S+)(?:\s+([\s\S]*))?$/i);
+  if (!match) return null;
+  const [, subcommand, context = ""] = match;
+  const detail = context.trim();
+  switch (subcommand.toLowerCase()) {
+    case "standup":
+      return `Using my GitHub Copilot CLI session history, generate a concise standup report${detail ? ` focused on ${detail}` : " for the last 24 hours"}. Group completed and in-progress work, and identify the relevant repository, branch, and sessions where available.`;
+    case "tips":
+      return `Analyze my recent GitHub Copilot CLI sessions and give me 3–5 personalized recommendations based on my usage patterns${detail ? `, focusing on ${detail}` : ""}. Ground each recommendation in observed behavior.`;
+    case "cost-tips":
+      return `Analyze token and AI-credit usage across my recent GitHub Copilot CLI sessions and suggest practical ways to reduce cost${detail ? `, focusing on ${detail}` : ""}. Base the advice on observed usage patterns.`;
+    case "search":
+      return detail
+        ? `Search my GitHub Copilot CLI session history for these terms or topics: ${detail}. Summarize relevant sessions and include dates, repository, or session names when available.`
+        : null;
+    case "improve":
+      return `Analyze my GitHub Copilot CLI session history${detail ? `, focusing on ${detail}` : ""}, for recurring friction that could be addressed by improving this repository's Copilot instructions. Suggest 3–5 specific additions, but do not modify any files.`;
+    default:
+      return null;
+  }
+}
+
 function renderMcpServers() {
-  mcpList.replaceChildren();
   mcpConfigList.replaceChildren();
   for (const server of mcpServers) {
-    const label = document.createElement("label");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = selectedMcpServers.includes(server.id);
-    checkbox.disabled = !server.enabled || busy;
-    checkbox.addEventListener("change", async () => {
-      const previous = [...selectedMcpServers];
-      const servers = checkbox.checked
-        ? [...previous, server.id] : previous.filter((id) => id !== server.id);
-      if (!currentChatId) {
-        selectedMcpServers = servers;
-        showNotice("");
-        return;
-      }
-      try {
-        await jsonRequest(`/api/chats/${currentChatId}/mcp-servers`, "PUT", { servers });
-        selectedMcpServers = servers;
-        chatMcpServers.set(currentChatId, servers);
-        showNotice("");
-      } catch (err) {
-        selectedMcpServers = previous;
-        checkbox.checked = !checkbox.checked;
-        showNotice(err.message);
-      }
-    });
-    label.append(checkbox, document.createTextNode(` ${server.name}${server.enabled ? "" : " (disabilitato)"}`));
-    const selection = document.createElement("div");
-    selection.className = "mcp-row";
-    selection.append(label);
-    mcpList.append(selection);
-
     const row = document.createElement("div");
     row.className = "mcp-row";
     const name = document.createElement("span");
@@ -712,10 +731,6 @@ function renderMcpServers() {
       if (!window.confirm(`Eliminare il server MCP ${server.name}?`)) return;
       try {
         await jsonRequest(`/api/mcp-servers/${server.id}`, "DELETE");
-        selectedMcpServers = selectedMcpServers.filter((id) => id !== server.id);
-        for (const [chatId, servers] of chatMcpServers) {
-          chatMcpServers.set(chatId, servers.filter((id) => id !== server.id));
-        }
         await loadMcpServers();
         showNotice("");
       } catch (err) {
@@ -726,7 +741,6 @@ function renderMcpServers() {
     mcpConfigList.append(row);
   }
   if (!mcpServers.length) {
-    mcpList.textContent = "Nessun server disponibile";
     mcpConfigList.textContent = "Nessun server configurato";
   }
 }
@@ -758,7 +772,6 @@ async function loadMcpServers() {
     mcpServers = data;
     renderMcpServers();
   } catch (err) {
-    mcpList.textContent = err.message;
     mcpConfigList.textContent = err.message;
   }
 }
@@ -797,75 +810,6 @@ async function loadSkills() {
   }
 }
 
-document.getElementById("saveToolPermissions").addEventListener("click", async () => {
-  if (!currentChatId) { showNotice("I tool selezionati saranno salvati al primo messaggio"); return; }
-  const tools = selectedTools();
-  try {
-    await jsonRequest(`/api/chats/${currentChatId}/tool-permissions`, "PUT", { tools });
-    chatTools.set(currentChatId, tools);
-    showNotice("Permessi tool salvati");
-  } catch (err) {
-    showNotice(err.message);
-  }
-});
-
-document.getElementById("screenshotBtn").addEventListener("click", async () => {
-  if (!navigator.mediaDevices?.getDisplayMedia) {
-    showNotice("Cattura schermo non supportata dal browser");
-    return;
-  }
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-    const video = document.createElement("video");
-    video.srcObject = stream;
-    await video.play();
-    if (!video.videoWidth || !video.videoHeight) throw new Error("Impossibile acquisire lo schermo");
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) throw new Error("Impossibile creare lo screenshot");
-    addAttachments([new File([blob], `screenshot-${Date.now()}.png`, { type: "image/png" })]);
-    showNotice("");
-  } catch (err) {
-    showNotice(`Screenshot: ${err.message}`);
-  } finally {
-    stream?.getTracks().forEach((track) => track.stop());
-  }
-});
-
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const dictationBtn = document.getElementById("dictationBtn");
-if (!SpeechRecognition) {
-  dictationBtn.disabled = true;
-  dictationStatus.textContent = "Dettatura non supportata dal browser";
-} else {
-  let recognition;
-  dictationBtn.addEventListener("click", () => {
-    if (recognition) { recognition.stop(); return; }
-    recognition = new SpeechRecognition();
-    recognition.lang = "it-IT";
-    recognition.onresult = (event) => {
-      const transcript = [...event.results].map((result) => result[0].transcript).join(" ");
-      input.value = `${input.value}${input.value && !input.value.endsWith(" ") ? " " : ""}${transcript}`;
-      autoResize();
-      updateSlashSuggestions();
-    };
-    recognition.onerror = (event) => { dictationStatus.textContent = `Dettatura: ${event.error}`; };
-    recognition.onend = () => { recognition = null; dictationBtn.textContent = "Dettatura"; };
-    try {
-      recognition.start();
-      dictationBtn.textContent = "Ferma dettatura";
-      dictationStatus.textContent = "Ascolto...";
-    } catch (err) {
-      recognition = null;
-      dictationStatus.textContent = `Dettatura: ${err.message}`;
-    }
-  });
-}
-
 async function loadChatList() {
   const res = await fetch("/api/chats");
   if (res.status === 401) { window.location.href = "/login.html"; return; }
@@ -875,9 +819,6 @@ async function loadChatList() {
   if (currentChatId) {
     setModelControls(chatModels.get(currentChatId) || modelSelect.value, true);
   }
-  settingsChatName.textContent = currentChatId
-    ? (chats.find((chat) => chat.id === currentChatId)?.title || "selezionata")
-    : "nuova";
   for (const chat of chats) chatUsages.set(chat.id, chat.usage);
   renderChatUsage();
   chatListEl.innerHTML = "";
@@ -885,8 +826,6 @@ async function loadChatList() {
     chatPermissions.set(c.id, c.permissions || []);
     chatUsages.set(c.id, c.usage);
     chatPlans.set(c.id, !!c.pending_plan);
-    chatMcpServers.set(c.id, c.mcp_servers || []);
-    chatTools.set(c.id, c.tool_permissions || []);
     const item = document.createElement("div");
     item.className = "chat-item" + (c.id === currentChatId ? " active" : "");
     const titleWrap = document.createElement("span");
@@ -958,45 +897,41 @@ async function deleteChat(chatId) {
   if (currentChatId === chatId) {
     currentChatId = null;
     setModelControls(localStorage.getItem("copilot-model") || "auto", false);
-    syncToolControls();
     pendingPlan = false;
-    selectedMcpServers = [];
-    toolPermissionsInput.value = "";
     renderMcpServers();
     messagesEl.innerHTML = "";
     renderChatUsage();
-    settingsChatName.textContent = "nuova";
   }
   chatUsages.delete(chatId);
   chatPlans.delete(chatId);
   chatModels.delete(chatId);
-  chatMcpServers.delete(chatId);
-  chatTools.delete(chatId);
   loadChatList();
 }
 
 async function openChat(chatId, refresh = false) {
-  if (busy && !refresh) return false;
+  const request = ++chatOpenRequest;
   const res = await fetch(`/api/chats/${chatId}`);
   if (res.status === 401) { window.location.href = "/login.html"; return; }
   if (!res.ok) return false;
   const msgs = await res.json();
+  if (request !== chatOpenRequest) return false;
   pendingChatId = null;
   currentChatId = chatId;
   sessionStorage.setItem("copilot-current-chat", chatId);
   setModelControls(chatModels.get(chatId) || localStorage.getItem("copilot-model") || "auto", true);
   showSettings(false);
-  syncToolControls();
   pendingPlan = chatPlans.get(chatId) || false;
-  selectedMcpServers = chatMcpServers.get(chatId) || [];
-  toolPermissionsInput.value = (chatTools.get(chatId) || []).join("\n");
   renderMcpServers();
   renderChatUsage();
   syncPermissions(chatPermissions.get(chatId) || []);
   messagesEl.innerHTML = "";
   const lastPlanIndex = msgs.findLastIndex((message) => message.role === "plan");
   for (const [index, m] of msgs.entries()) {
-    const element = addMessage(m.content, m.role === "user" ? "user" : "bot", m.model, m.ts, m.usage);
+    const content = m.role === "user" ? displayUserMessage(m.content) : m.content;
+    const element = addMessage(
+      content, m.role === "user" ? "user" : "bot", m.model, m.ts, m.usage, [],
+      m.auto_model === true,
+    );
     if (index === lastPlanIndex && pendingPlan) {
       element.classList.add("pending-plan-message");
       attachPlanActions(element);
@@ -1008,7 +943,7 @@ async function openChat(chatId, refresh = false) {
 }
 
 function attachPlanActions(element) {
-  if (!advancedEnabled() || element.querySelector(".plan-actions")) return;
+  if (element.querySelector(".plan-actions")) return;
   const actions = document.createElement("div");
   actions.className = "plan-actions";
   for (const [label, path] of [
@@ -1028,15 +963,17 @@ function attachPlanActions(element) {
       actions.querySelectorAll("button").forEach((item) => { item.disabled = true; });
       const placeholder = path.endsWith("approve") ? addMessage("Copilot sta eseguendo il piano...", "bot pending") : null;
       try {
-        const data = await jsonRequest(path, "POST", { advanced: true });
+        const actionChatId = currentChatId;
+        const data = await jsonRequest(path, "POST", {});
         placeholder?.remove();
         actions.remove();
-        pendingPlan = false;
-        if (currentChatId) chatPlans.set(currentChatId, false);
-        if (data.chat_id) currentChatId = data.chat_id;
-        if (data.usage && currentChatId) chatUsages.set(currentChatId, data.usage);
-        if (data.reply) addMessage(data.reply, "bot", data.model, data.ts, data.message_usage);
-        renderChatUsage();
+        if (actionChatId) chatPlans.set(actionChatId, false);
+        if (data.usage && actionChatId) chatUsages.set(actionChatId, data.usage);
+        if (currentChatId === actionChatId) {
+          pendingPlan = false;
+          if (data.reply) addMessage(data.reply, "bot", data.model, data.ts, data.message_usage);
+          renderChatUsage();
+        }
         loadChatList();
         showNotice(path.endsWith("cancel") ? "Piano annullato" : "");
       } catch (err) {
@@ -1059,14 +996,13 @@ function showActivity(container, event) {
   const name = data.tool_name || data.name || data.tool || data.command || "tool";
   activity.textContent = `Attività: ${String(name)}`;
   container.append(activity);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (container.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 async function streamChat(formData, pending, activity) {
   formData.append("async", "true");
   formData.append("request_id", activeJob.id);
-  const url = formData.get("advanced") === "true" ? "/api/chat/stream" : "/api/chat";
-  await startJobRequest(url, { method: "POST", body: formData });
+  await startJobRequest("/api/chat/stream", { method: "POST", body: formData });
   return waitForJob(pending, activity);
 }
 
@@ -1090,10 +1026,8 @@ function clearJob() {
 function setChatBusy(value) {
   busy = value;
   sendBtn.disabled = value;
-  newChatBtn.disabled = value;
   attachmentBtn.disabled = value;
   document.querySelectorAll(".plan-actions button").forEach((button) => { button.disabled = value; });
-  syncToolControls();
   renderMcpServers();
 }
 
@@ -1155,9 +1089,6 @@ async function startJobRequest(url, options) {
   }
   activeJob.accepted = true;
   activeJob.chat_id = data.chat_id;
-  currentChatId = data.chat_id;
-  pendingChatId = null;
-  sessionStorage.setItem("copilot-current-chat", currentChatId);
   rememberJob();
 }
 
@@ -1205,11 +1136,11 @@ async function waitForJob(pending, activity) {
     }
     activeJob.accepted = true;
     activeJob.chat_id = data.chat_id;
-    currentChatId = data.chat_id;
-    pendingChatId = null;
-    sessionStorage.setItem("copilot-current-chat", currentChatId);
     rememberJob();
-    showNotice("");
+    if (currentChatId === activeJob.chat_id
+      || (!currentChatId && pendingChatId === activeJob.chat_id)) {
+      showNotice("");
+    }
     if (data.progress?.content) {
       pending.classList.remove("thinking");
       pending.removeAttribute("role");
@@ -1229,8 +1160,12 @@ async function waitForJob(pending, activity) {
 }
 
 async function approvePlanAsync() {
+  const chatId = currentChatId;
   setChatBusy(true);
-  activeJob = { id: newRequestId(), chat_id: currentChatId, accepted: false };
+  activeJob = {
+    id: newRequestId(), chat_id: chatId, accepted: false,
+    autoModel: modelSelect.value === "auto",
+  };
   rememberJob();
   const pending = addMessage("Copilot sta eseguendo il piano...", "bot pending");
   const activity = document.createElement("div");
@@ -1238,13 +1173,15 @@ async function approvePlanAsync() {
   try {
     await startJobRequest("/api/chat/plan/approve", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ advanced: true, async: true, request_id: activeJob.id, chat_id: currentChatId }),
+      body: JSON.stringify({ async: true, request_id: activeJob.id, chat_id: chatId }),
     });
     const data = await waitForJob(pending, activity);
-    pendingPlan = false;
-    chatPlans.set(currentChatId, false);
+    chatPlans.set(chatId, false);
+    if (currentChatId === chatId) pendingPlan = false;
     await loadChatList();
-    if (!await openChat(currentChatId, true)) addMessage(data.reply, "bot", data.model, data.ts, data.message_usage);
+    if (currentChatId === chatId && settingsView.hidden) {
+      await openChat(chatId, true);
+    }
   } catch (err) {
     showNotice(err.message);
   } finally {
@@ -1255,9 +1192,21 @@ async function approvePlanAsync() {
 }
 
 async function sendCommand(text) {
+  if (/^\/chronicle(?:\s*)$/i.test(text)) {
+    addMessage("Sottocomandi disponibili: /chronicle standup, /chronicle tips, /chronicle cost-tips, /chronicle search <termine>, /chronicle improve. /chronicle reindex richiede la CLI interattiva.", "bot");
+    return true;
+  }
+  if (/^\/chronicle\s+reindex(?:\s|$)/i.test(text)) {
+    addMessage("/chronicle reindex richiede la CLI interattiva e non è disponibile nella webchat.", "bot");
+    return true;
+  }
+  if (/^\/chronicle\b/i.test(text) && !chroniclePrompt(text)) {
+    addMessage("Sottocomando /chronicle non valido. Usa /chronicle per vedere quelli disponibili; /chronicle search richiede un termine.", "error");
+    return true;
+  }
   const command = text.match(/^\/(help|usage)(?:\s*)$/i) || text.match(/^\/model\s+(\S+)\s*$/i);
   if (!command) return false;
-  const data = await jsonRequest("/api/command", "POST", { command: text, advanced: true });
+  const data = await jsonRequest("/api/command", "POST", { command: text });
   if (data.model) {
     setModelControls(data.model);
     localStorage.setItem("copilot-model", data.model);
@@ -1277,98 +1226,121 @@ async function submitChat(e) {
   }
   const text = input.value.trim();
   if (!text && attachedFiles.length === 0) return;
+  const submittedChatId = currentChatId || pendingChatId;
+  const submittedWithoutChat = !submittedChatId;
+  let responseChatId = submittedChatId;
+  const submittedModel = modelSelect.value;
+  const submittedPermissions = selectedPermissions();
+  const isSubmittedChatSelected = (chatId) => currentChatId === chatId
+    || (!currentChatId && pendingChatId === chatId)
+    || (submittedWithoutChat && !currentChatId && !pendingChatId);
+  const submittedFiles = attachedFiles;
+  const imageFiles = submittedFiles.filter((file) => file.type.startsWith("image/"));
+  const prompt = imageFiles.length
+    ? `${text || "Analizza i file allegati."}\n🖼️`
+    : chroniclePrompt(text) || text;
 
   busy = true;
-  syncToolControls();
   renderMcpServers();
   sendBtn.disabled = true;
-  newChatBtn.disabled = true;
   attachmentBtn.disabled = true;
-  const advanced = advancedEnabled();
-  const submissionServers = [...selectedMcpServers];
-  const submissionTools = selectedTools();
-  const isCommand = advanced && attachedFiles.length === 0
-    && (/^\/(help|usage)\s*$/i.test(text) || /^\/model\s+\S+\s*$/i.test(text));
-  addMessage(text || `[Allegati ${attachedFiles.length} file]`, "user", null, new Date().toISOString());
+  const requestedPlan = permissionModeSelects[0]?.value === "plan";
+  const isCommand = attachedFiles.length === 0
+    && (/^\/(help|usage)\s*$/i.test(text) || /^\/model\s+\S+\s*$/i.test(text)
+      || /^\/chronicle(?:\s*)$/i.test(text) || /^\/chronicle\s+reindex(?:\s|$)/i.test(text)
+      || /^\/chronicle\s+search\s*$/i.test(text)
+      || (/^\/chronicle\b/i.test(text) && !chroniclePrompt(text)));
+  const displayText = text || (imageFiles.length ? "" : `[Allegati ${submittedFiles.length} file]`);
+  addMessage(displayText, "user", null, new Date().toISOString(), null, submittedFiles);
   // Il testo è già stato acquisito per la richiesta; svuota il campo anche se
   // la risposta fallisce o lo streaming si interrompe.
   input.value = "";
   autoResize();
-  const submittedFiles = attachedFiles;
   attachedFiles = [];
   renderAttachmentPreviews();
+  attachmentPicker.hidden = true;
+  attachmentBtn.setAttribute("aria-expanded", "false");
   const activity = document.createElement("div");
   activity.className = "activity-log";
-  if (advanced && !isCommand) messagesEl.append(activity);
+  if (!isCommand) messagesEl.append(activity);
   const pending = isCommand ? null : addMessage("Copilot sta pensando...", "bot pending");
-  let success = false;
 
   try {
     if (isCommand) {
       await sendCommand(text);
-      success = true;
       return;
     }
     const formData = new FormData();
-    formData.append("message", text);
-    formData.append("chat_id", currentChatId || pendingChatId || "");
-    formData.append("model", modelSelect.value);
-    formData.append("permissions", JSON.stringify(selectedPermissions()));
-    if (advanced) {
-      formData.append("advanced", "true");
-      formData.append("mcp_servers", JSON.stringify(submissionServers));
-      formData.append("tool_permissions", JSON.stringify(submissionTools));
-      if (planToggle.checked) formData.append("plan", "true");
-    }
+    formData.append("message", prompt);
+    formData.append("chat_id", submittedChatId || "");
+    formData.append("model", submittedModel);
+    formData.append("permissions", JSON.stringify(submittedPermissions));
+    formData.append("mcp_servers", "[]");
+    formData.append("tool_permissions", "[]");
+    if (requestedPlan) formData.append("plan", "true");
     submittedFiles.forEach((file) => formData.append("files", file));
     activeJob = {
-      id: newRequestId(), chat_id: currentChatId || pendingChatId,
-      accepted: false, text: text || `[Allegati ${submittedFiles.length} file]`,
+      id: newRequestId(), chat_id: submittedChatId, accepted: false,
+      text: prompt || `[Allegati ${submittedFiles.length} file]`,
     };
     rememberJob();
     const data = await streamChat(formData, pending, activity);
     pending.remove();
+    responseChatId = data.chat_id || responseChatId;
     if (data.chat_id) {
-      currentChatId = data.chat_id;
-      pendingChatId = null;
-      chatModels.set(currentChatId, data.model || modelSelect.value);
-      setModelControls(data.model || modelSelect.value, true);
-      syncToolControls();
-      chatUsages.set(currentChatId, data.usage);
-      chatPermissions.set(currentChatId, selectedPermissions());
-      if (advanced) {
-        chatMcpServers.set(currentChatId, submissionServers);
-        chatTools.set(currentChatId, submissionTools);
+      const responseChatId = data.chat_id;
+      const chatSelected = isSubmittedChatSelected(responseChatId);
+      chatModels.set(responseChatId, data.model || submittedModel);
+      chatUsages.set(responseChatId, data.usage);
+      chatPermissions.set(responseChatId, submittedPermissions);
+      chatPlans.set(responseChatId, !!data.pending_plan);
+      if (chatSelected) {
+        currentChatId = responseChatId;
+        pendingChatId = null;
+        sessionStorage.setItem("copilot-current-chat", responseChatId);
+        setModelControls(data.model || submittedModel, true);
+        pendingPlan = !!data.pending_plan;
+        renderMcpServers();
+        renderChatUsage();
       }
-      pendingPlan = !!data.pending_plan;
-      chatPlans.set(currentChatId, pendingPlan);
-      renderMcpServers();
-      renderChatUsage();
       loadChatList();
     }
-    const reply = addMessage(data.reply || "", "bot", data.model, data.ts, data.message_usage);
-    if (pendingPlan) {
-      reply.classList.add("pending-plan-message");
-      attachPlanActions(reply);
+    if (isSubmittedChatSelected(data.chat_id)) {
+      if (requestedPlan) permissionModeSelects[0].value = lastPermissionMode;
+      const reply = addMessage(
+        data.reply || "", "bot", data.model, data.ts, data.message_usage, [],
+        data.auto_model === true,
+      );
+      if (pendingPlan) {
+        reply.classList.add("pending-plan-message");
+        attachPlanActions(reply);
+      }
     }
-    success = true;
-    showNotice("");
+    if (isSubmittedChatSelected(data.chat_id)) {
+      showNotice("");
+    }
   } catch (err) {
     pending?.remove();
     // Il messaggio dell'utente resta visibile anche in caso di errore: viene
     // salvato lato server prima di invocare Copilot, quindi rimuoverlo dalla UI
     // sarebbe fuorviante (l'invio è comunque avvenuto).
-    if (err.chat_id) {
+    const errorChatId = err.chat_id || submittedChatId;
+    responseChatId = errorChatId;
+    const chatSelected = isSubmittedChatSelected(errorChatId);
+    if (err.chat_id && err.usage) chatUsages.set(err.chat_id, err.usage);
+    if (chatSelected && err.chat_id) {
       currentChatId = err.chat_id;
       pendingChatId = null;
-      setModelControls(chatModels.get(currentChatId) || modelSelect.value, true);
-      syncToolControls();
-      if (err.usage) chatUsages.set(currentChatId, err.usage);
+      setModelControls(chatModels.get(err.chat_id) || submittedModel, true);
       renderChatUsage();
     }
     loadChatList();
     if (err.unconfirmed) {
       showNotice(err.message);
+      return;
+    }
+    if (!chatSelected) {
+      showNotice(`Errore nella chat in background: ${err.message}`);
       return;
     }
     const errorMessage = addMessage(`Errore: ${err.message}`, "error");
@@ -1385,15 +1357,14 @@ async function submitChat(e) {
     }
   } finally {
     activity.remove();
-    if (success && pendingPlan) planToggle.checked = false;
     busy = false;
-    syncToolControls();
     renderMcpServers();
     sendBtn.disabled = false;
-    newChatBtn.disabled = false;
     attachmentBtn.disabled = false;
     updateSlashSuggestions();
-    if (!document.hidden) input.focus();
+    if (!document.hidden && settingsView.hidden && isSubmittedChatSelected(responseChatId)) {
+      input.focus();
+    }
   }
 }
 form.addEventListener("submit", submitChat);
@@ -1406,7 +1377,7 @@ input.addEventListener("keydown", (e) => {
 });
 
 newChatBtn.addEventListener("click", async () => {
-  if (busy) return;
+  chatOpenRequest += 1;
   const res = await fetch("/api/new-chat", { method: "POST" });
   if (!res.ok) {
     showNotice((await readApiResponse(res)).error || "Impossibile creare una nuova chat");
@@ -1421,20 +1392,15 @@ newChatBtn.addEventListener("click", async () => {
   currentChatId = null;
   sessionStorage.removeItem("copilot-current-chat");
   setModelControls(localStorage.getItem("copilot-model") || "auto", false);
-  settingsChatName.textContent = "nuova";
   showSettings(false);
-  syncToolControls();
   pendingPlan = false;
-  selectedMcpServers = [];
-  toolPermissionsInput.value = "";
-  planToggle.checked = false;
   renderMcpServers();
   renderChatUsage();
   syncPermissions([]);
   messagesEl.innerHTML = "";
   sidebar.classList.add("hidden");
   loadChatList();
-  syncAdvancedMode();
+  syncChatFeatures();
 });
 
 logoutBtn.addEventListener("click", async () => {
@@ -1461,15 +1427,17 @@ async function restoreChat() {
     if (chatId) restored = await openChat(chatId, true);
     if (!activeJob) return;
     setChatBusy(true);
-    if (!restored && activeJob.text) addMessage(activeJob.text, "user");
+    if (!restored && activeJob.text) addMessage(displayUserMessage(activeJob.text), "user");
     const pending = addMessage("Copilot sta pensando...", "bot pending");
     const activity = document.createElement("div");
     messagesEl.append(activity);
     try {
       const data = await waitForJob(pending, activity);
       await loadChatList();
-      if (!await openChat(data.chat_id, true)) {
-        addMessage(data.reply || "", "bot", data.model, data.ts, data.message_usage);
+      const chatIsSelected = currentChatId === data.chat_id
+        || (!restored && !currentChatId && !pendingChatId);
+      if (chatIsSelected && settingsView.hidden) {
+        await openChat(data.chat_id, true);
       }
     } catch (err) {
       showNotice(err.message);
@@ -1486,7 +1454,10 @@ async function restoreChat() {
       messagesEl.append(activity);
       try {
         const data = await waitForJob(pending, activity);
-        if (!await openChat(data.chat_id, true)) addMessage(data.reply || "", "bot", data.model, data.ts, data.message_usage);
+        await loadChatList();
+        if (currentChatId === data.chat_id && settingsView.hidden) {
+          await openChat(data.chat_id, true);
+        }
       } catch (error) {
         showNotice(error.message);
       } finally {
@@ -1500,4 +1471,4 @@ async function restoreChat() {
 
 restoreChat();
 loadModels();
-syncAdvancedMode();
+syncChatFeatures();

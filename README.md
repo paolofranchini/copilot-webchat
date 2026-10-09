@@ -11,38 +11,37 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 - **Login con sola password** (nessun nome utente), hash salvato con `scrypt`.
 - **Cronologia conversazioni** letta dai file nativi delle sessioni Copilot; le stesse sessioni sono accessibili sia dalla CLI sia dalla webchat.
 - **Gestione sessioni**: ogni sessione Copilot può essere rinominata o eliminata definitivamente dalla sidebar.
+  La rinomina sostituisce anche i nomi multilinea e codifica i caratteri speciali nel file YAML, mantenendo la sessione leggibile dalla CLI.
 - **Continuità di contesto**: ogni conversazione richiama `copilot --resume` sullo stesso `session-id`, così Copilot ricorda lo storico dei messaggi precedenti.
+- **Risposte in streaming**: testo e attività dei tool vengono recuperati durante l'elaborazione; anche l'approvazione dei piani è asincrona. Mentre Copilot lavora puoi consultare le impostazioni o altre chat; il risultato resta associato alla chat d'origine. Il flusso resta attivo se cambi app o ricarichi la pagina e non reinvia il prompt.
 - **Risposte asincrone**: dopo l'invio Copilot lavora sul server, anche se cambi app, spegni lo schermo o ricarichi la pagina. Al ritorno nella stessa tab la risposta viene recuperata automaticamente; una perdita di connessione mostra un avviso neutro, non un errore rosso, e non reinvia il prompt. Gli errori effettivi di Copilot restano segnalati.
 - **Modello per chat**: l'elenco del selettore viene caricato dalla CLI a ogni apertura della webapp, senza una lista di modelli mantenuta nel frontend. Su una chat aperta la scelta equivale a `/model <modello>` e vale per i turni successivi; per una chat nuova viene usata come modello iniziale.
 - **Crediti per sessione**: il totale AIU viene letto dal database nativo di Copilot CLI e mostrato nell'area di composizione della chat.
-- **Metadati delle risposte**: modello, crediti e ora sono allineati su una sola riga. I crediti sono il costo del turno (tutte le chiamate registrate tra un messaggio utente e il successivo, incluse attività dei tool e sottoagenti) e compaiono solo sull'ultima risposta del turno, anche nella cronologia. I messaggi utente mostrano solo l'ora; se la CLI non ha registrato dati di consumo o timestamp utilizzabili, il costo non viene mostrato.
+- **Metadati delle risposte**: modello, crediti e ora sono allineati su una sola riga. Il suffisso `(Auto)` distingue le risposte generate con selezione automatica del modello; la provenienza è salvata in `webchat.db` e resta associata alla risposta anche su altri browser. I crediti sono il costo del turno (tutte le chiamate registrate tra un messaggio utente e il successivo, incluse attività dei tool e sottoagenti) e compaiono solo sull'ultima risposta del turno, anche nella cronologia. I messaggi utente mostrano solo l'ora; se la CLI non ha registrato dati di consumo o timestamp utilizzabili, il costo non viene mostrato.
 - **Modalità chat**: Ask non espone strumenti, Edit abilita comandi e modifica file, Agent concede tutti i permessi mantenendo la modalità interattiva della CLI. La scelta è associata alla chat.
-- **File allegati**: il pulsante `+` apre un'area per selezionare o trascinare file (fino a 5 file da 10 MB ciascuno per messaggio). Immagini e documenti nativi vengono passati a Copilot come allegati; i file testuali comuni vengono inseriti direttamente nel prompt.
+- **File allegati**: il pulsante `+` apre un'area per selezionare o trascinare file (fino a 5 file da 10 MB ciascuno per messaggio). Puoi anche incollare un'immagine dagli appunti nel campo del messaggio. Immagini e documenti nativi vengono passati a Copilot come allegati; i file testuali comuni vengono inseriti direttamente nel prompt.
 - **Immagini nelle risposte**: Copilot può usare `![descrizione](https://...)` per mostrare immagini esterne oppure salvare immagini PNG, JPEG, GIF, WebP o AVIF nella cartella `files/` della sessione e mostrarle tramite `/api/chats/<id>/images/<nome-file>`. Un clic apre l'immagine a dimensione intera; gli errori di caricamento sono indicati nel messaggio. Il supporto funziona anche nella cronologia e nelle risposte asincrone; non aggiunge un generatore di immagini né modifica i permessi della chat.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
 
-## Modalità avanzata (sperimentale)
+## Impostazioni e funzionalità
 
 Premi **Impostazioni** sotto «Nuova chat» per aprire la schermata dedicata
 nell'area principale; scegli una chat dalla sidebar o premi «Nuova chat» per
-tornare ai messaggi. La schermata riunisce l'interruttore **Modalità avanzata**
-nella sezione Generali, il modello e la modalità chat (disponibili anche
-nella sidebar), le opzioni per la chat selezionata e la gestione dei server MCP e delle
-skill/plugin. Modello e autorizzazioni sono sincronizzati tra le due posizioni.
-La modalità avanzata è salvata nel `localStorage` del browser; di default
-è spenta e la chat normale continua a usare `POST /api/chat` senza nuovi
-flag. Le impostazioni delle singole chat sono salvate nel database.
+tornare ai messaggi. La schermata riunisce il modello e le autorizzazioni
+(disponibili anche nella sidebar), le opzioni per la chat selezionata e la
+gestione dei server MCP e delle skill/plugin. Modello e autorizzazioni sono
+sincronizzati tra le due posizioni. Le impostazioni delle singole chat sono
+salvate nel database.
 
-- **Streaming**: il server legge gli eventi JSONL della CLI durante l'esecuzione
-  e la chat recupera periodicamente testo e attività dei tool. Se la CLI non
-  emette delta testuali, la risposta compare al termine. La disconnessione del
-  browser non termina il processo e **non** ritenta il prompt. Il limite di
-  esecuzione resta di 300 secondi. Anche l'approvazione di un piano è asincrona.
-  L'API conserva gli endpoint sincroni/SSE per i client che non richiedono `async`.
+- **Streaming e continuità**: la chat usa il flusso di eventi JSONL della CLI e
+  recupera periodicamente testo e attività dei tool. Se la CLI non emette delta
+  testuali, la risposta compare al termine. La disconnessione del browser non
+  termina il processo e **non** ritenta il prompt. Il limite di esecuzione resta
+  di 300 secondi; gli invii passano dall'endpoint streaming.
 - **Piano**: `--plan` produce un piano senza autorizzare shell, scrittura o URL.
   L'utente può approvarlo o annullarlo; l'approvazione riprende la stessa sessione
   CLI con i permessi della chat. Finché il piano è in attesa, non è possibile inviare
-  altri messaggi in modalità avanzata.
+  altri messaggi.
 - **Server MCP locali**: è possibile registrare un comando con percorso assoluto,
   argomenti e variabili d'ambiente, abilitarlo globalmente e selezionarlo per chat.
   Viene passato alla CLI con `--additional-mcp-config` tramite un file temporaneo
@@ -53,20 +52,19 @@ flag. Le impostazioni delle singole chat sono salvate nel database.
 - **Skill e plugin**: elenco in sola lettura tramite `copilot skill list --json` e
   `copilot plugin list --json`. La CLI installata non offre un flag di selezione
   delle skill per singola invocazione; non è possibile abilitarle per chat dalla UI.
-- **Comandi**: `/help` e `/usage` (in modalità avanzata) e `/model` sono gestiti
-  dalla webchat, non inviati arbitrariamente alla CLI. All'avvio, `/model` interroga
+- **Comandi**: `/help`, `/usage` e `/model` sono gestiti dalla webchat, non
+  inviati arbitrariamente alla CLI. All'avvio, `/model` interroga
   le completion della CLI per caricare gli ID disponibili; l'elenco riflette la
   versione installata e può includere modelli non abilitati per il proprio account.
-  Il selettore applica `/model <modello>` alla chat aperta anche senza modalità
-  avanzata. I permessi avanzati possono autorizzare pattern
-  puntuali come `shell(git status)` o `url(github.com)`, oltre ai permessi esistenti.
+  Il selettore applica `/model <modello>` alla chat aperta. I permessi granulari
+  possono autorizzare pattern puntuali come `shell(git status)` o
+  `url(github.com)`, oltre ai permessi esistenti.
+  `/chronicle standup`, `tips`, `cost-tips`, `search <termine>` e `improve`
+  inviano alla CLI prompt dedicati basati sulla cronologia delle sessioni; `improve`
+  propone modifiche alle istruzioni senza cambiare file. `/chronicle` mostra i
+  sottocomandi disponibili. `reindex` resta disponibile solo nella CLI interattiva.
   La CLI non espone un canale di approvazione bidirezionale affidabile in modalità
   `-p`: le richieste di conferma per singola azione **non** sono disponibili.
-- **Allegati**: screenshot tramite condivisione schermo e dettatura tramite le API
-  del browser (se supportate). La dettatura compila il campo di testo, senza inviare
-  l'audio al backend. Queste API potrebbero richiedere **HTTPS** o `localhost`;
-  una pagina HTTP raggiunta tramite IP Tailscale potrebbe non poterle usare.
-
 Le opzioni sono state verificate con la CLI installata (versione 1.0.88);
 ricontrolla `copilot --help` dopo gli aggiornamenti per eventuali cambiamenti.
 Le autorizzazioni `shell` e gli strumenti MCP locali possono eseguire operazioni
@@ -95,7 +93,7 @@ Dati d'esecuzione (non versionati, salvati fuori dal repo in `~/.copilot/`):
 
 - `webchat_auth` — hash della password di accesso.
 - `webchat_secret` — chiave segreta per firmare i cookie di sessione Flask.
-- `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP), stato e risultati dei lavori asincroni. La cronologia principale e i crediti restano nei dati nativi Copilot. I risultati dei lavori vengono rimossi quando elimini la chat.
+- `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP), provenienza Auto delle risposte, stato e risultati dei lavori asincroni. La cronologia principale e i crediti restano nei dati nativi Copilot. I risultati dei lavori vengono rimossi quando elimini la chat.
 - `session-state/` — sessioni native Copilot, inclusi eventi e cronologia delle conversazioni. Le immagini locali mostrate nelle risposte restano nella sottocartella `files/` della sessione e vengono eliminate insieme alla chat.
 
 ## Configurazione iniziale
@@ -187,7 +185,7 @@ La sidebar legge le sessioni native Copilot, indipendentemente da come sono stat
 
 ## Sicurezza
 
-- **Ask** limita la CLI a nessuno strumento; **Edit** abilita `--allow-tool=shell` e `--allow-tool=write`; **Agent** usa `--allow-all` in modalità interattiva, non autopilot. Shell può modificare file anche quando lo strumento `write` è negato, quindi Edit consente operazioni potenzialmente distruttive. La modalità avanzata mantiene inoltre le impostazioni separate per tool specifici e server MCP.
+- **Ask** limita la CLI a nessuno strumento; **Edit** abilita `--allow-tool=shell` e `--allow-tool=write`; **Agent** usa `--allow-all` in modalità interattiva, non autopilot. Shell può modificare file anche quando lo strumento `write` è negato, quindi Edit consente operazioni potenzialmente distruttive. La webchat mantiene inoltre impostazioni separate per tool specifici e server MCP.
 - **Non esporre questo servizio su internet pubblico** senza aggiungere ulteriori misure di sicurezza (reverse proxy con TLS, rate limiting, ecc.). È pensato per essere raggiunto solo tramite una rete privata come Tailscale.
 - La password è salvata solo come hash (`scrypt`), mai in chiaro.
 - Le immagini locali richiedono il login e sono limitate alla cartella `files/` della sessione: non sono esposti percorsi arbitrari del server e SVG/HTML non sono serviti. Le immagini esterne vengono caricate direttamente dal browser, senza inviare il referrer: il sito esterno vede comunque l'IP del dispositivo. Usa solo URL fidati.

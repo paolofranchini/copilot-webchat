@@ -55,14 +55,10 @@ class AsyncChatTests(unittest.TestCase):
         with self.client.session_transaction() as browser:
             browser["authenticated"] = True
 
-    def start(self, advanced=False, **extra):
+    def start(self, **extra):
         job_id = str(uuid.uuid4())
         data = {"message": "ciao", "async": "true", "request_id": job_id, **extra}
-        if advanced:
-            data["advanced"] = "true"
-        response = self.client.post(
-            "/api/chat/stream" if advanced else "/api/chat", data=data
-        )
+        response = self.client.post("/api/chat/stream", data=data)
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json["job_id"], job_id)
         return job_id, response.json["chat_id"]
@@ -78,7 +74,7 @@ class AsyncChatTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("Il lavoro non e' terminato")
 
-    def test_normal_job_survives_closed_response_and_browser_change(self):
+    def test_stream_job_survives_closed_response_and_browser_change(self):
         job_id, chat_id = self.start(files=(io.BytesIO(b"contenuto"), "test.txt"))
         other = self.backend.app.test_client()
         with other.session_transaction() as browser:
@@ -86,7 +82,14 @@ class AsyncChatTests(unittest.TestCase):
         result = self.wait(job_id, other)
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["result"]["reply"], "Risposta")
+        self.assertTrue(result["result"]["auto_model"])
         self.assertEqual(result["result"]["usage"], {"ai_credits": 1})
+        with self.backend.app.app_context():
+            marked = self.backend.get_db().execute(
+                "SELECT count(*) FROM auto_model_responses WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()[0]
+        self.assertEqual(marked, 1)
         self.assertEqual([m["role"] for m in other.get(f"/api/chats/{chat_id}").json],
                          ["user", "bot"])
         self.assertFalse(list(self.backend.UPLOAD_DIR.glob("*")))
@@ -101,16 +104,23 @@ class AsyncChatTests(unittest.TestCase):
             release.wait(5)
             return "ok", "gpt-test", None
 
-        with patch.object(self.backend, "run_copilot", side_effect=run) as invocation:
+        def fake_stream(*args, **kwargs):
+            run()
+            yield self.backend.sse({
+                "type": "done", "reply": "ok", "model": "gpt-test",
+                "chat_id": args[2], "usage": None,
+            })
+
+        with patch.object(self.backend, "run_copilot_stream", side_effect=fake_stream) as invocation:
             job_id, chat_id = self.start()
             self.assertTrue(entered.wait(2))
             try:
-                duplicate = self.client.post("/api/chat", data={
+                duplicate = self.client.post("/api/chat/stream", data={
                     "async": "true", "request_id": job_id, "message": "ciao"
                 })
                 self.assertEqual(duplicate.status_code, 202)
                 self.assertEqual(duplicate.json["chat_id"], chat_id)
-                self.assertEqual(self.client.post("/api/chat", data={
+                self.assertEqual(self.client.post("/api/chat/stream", data={
                     "async": "true", "request_id": str(uuid.uuid4()),
                     "chat_id": chat_id, "message": "secondo",
                 }).status_code, 409)
@@ -120,8 +130,8 @@ class AsyncChatTests(unittest.TestCase):
                 release.set()
                 self.wait(job_id)
 
-    def test_advanced_progress_plan_and_async_approval(self):
-        job_id, chat_id = self.start(advanced=True, plan="true")
+    def test_stream_progress_plan_and_async_approval_without_mode_flag(self):
+        job_id, chat_id = self.start(stream=True, plan="true")
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             job = self.client.get(f"/api/chat/jobs/{job_id}").json
@@ -134,7 +144,7 @@ class AsyncChatTests(unittest.TestCase):
         self.assertTrue(self.wait(job_id)["result"]["pending_plan"])
         approval_id = str(uuid.uuid4())
         approved = self.client.post("/api/chat/plan/approve", json={
-            "advanced": True, "async": True, "request_id": approval_id, "chat_id": chat_id
+            "async": True, "request_id": approval_id, "chat_id": chat_id
         })
         self.assertEqual(approved.status_code, 202)
         self.assertEqual(self.wait(approval_id)["result"]["reply"], "Risposta")
@@ -146,10 +156,14 @@ class AsyncChatTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/api/chats/{chat_id}").status_code, 200)
         self.assertEqual(self.client.get(f"/api/chat/jobs/{job_id}").status_code, 404)
 
-    def test_real_error_is_persisted_and_releases_chat(self):
-        with patch.object(self.backend, "run_copilot", side_effect=self.backend.CopilotRunError(
-            "timeout: risposta troppo lenta", None, 504
-        )):
+    def test_stream_error_is_persisted_and_releases_chat(self):
+        def error_stream(*args, **kwargs):
+            yield self.backend.sse({
+                "type": "error", "chat_id": args[2],
+                "error": "timeout: risposta troppo lenta",
+            })
+
+        with patch.object(self.backend, "run_copilot_stream", side_effect=error_stream):
             job_id, chat_id = self.start()
             result = self.wait(job_id)
         self.assertEqual(result["status"], "error")
@@ -160,7 +174,7 @@ class AsyncChatTests(unittest.TestCase):
     def test_auth_validation_and_restart_detection(self):
         self.assertEqual(self.backend.app.test_client().get(
             f"/api/chat/jobs/{uuid.uuid4()}").status_code, 401)
-        self.assertEqual(self.client.post("/api/chat", data={
+        self.assertEqual(self.client.post("/api/chat/stream", data={
             "async": "true", "message": "ciao", "request_id": "invalid"
         }).status_code, 400)
         job_id, chat_id = str(uuid.uuid4()), str(uuid.uuid4())
@@ -174,13 +188,14 @@ class AsyncChatTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("riavvio", result["result"]["error"])
 
-    def test_legacy_sync_and_sse_endpoints_still_work(self):
-        result = self.client.post("/api/chat", json={"message": "sincrono"})
-        self.assertEqual(result.status_code, 200)
-        self.assertEqual(result.json["reply"], "Risposta")
+    def test_stream_endpoint_is_primary_and_old_endpoint_is_removed(self):
+        self.assertEqual(self.client.post("/api/chat", json={
+            "message": "no longer supported"
+        }).status_code, 405)
         result = self.client.post("/api/chat/stream", data={
-            "message": "stream", "advanced": "true"
+            "message": "stream"
         })
+        self.assertEqual(result.status_code, 200)
         events = [json.loads(line.removeprefix("data: "))
                   for line in result.get_data(as_text=True).splitlines()
                   if line.startswith("data: ")]

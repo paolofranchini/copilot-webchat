@@ -40,6 +40,9 @@ const metadata = reply.children[0];
 assert.equal(metadata.className, "msg-metadata");
 assert.deepEqual(metadata.children.map((child) => child.className),
   ["model-tag", "msg-credits", "msg-time"]);
+const automatic = context.addMessage("Risposta", "bot", "gpt-6-luna",
+  "2026-10-07T10:00:00Z", null, [], true);
+assert.equal(automatic.children[0].children[0].textContent, "gpt-6-luna (Auto)");
 assert.equal(metadata.children[1].textContent, "✦ 1,25");
 assert.equal(context.formatChatUsage({ ai_credits: 19.01 }, true), "✦ 19,01");
 assert.equal(context.formatChatUsage({ ai_credits: 19.01 }), "19,01 crediti AI");

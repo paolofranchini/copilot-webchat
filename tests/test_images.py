@@ -125,35 +125,30 @@ class ImageResponseTests(unittest.TestCase):
         self.assertIn(self.url, prompt)
         self.assertIn("rispetta i permessi disponibili", prompt)
 
-    def test_normal_and_streaming_replies_keep_images_in_history(self):
-        for endpoint in ("/api/chat", "/api/chat/stream"):
-            with self.subTest(endpoint=endpoint):
-                chat_id = str(uuid.uuid4())
-                response = self.client.post(endpoint, data={
-                    "chat_id": chat_id, "message": "Crea un diagramma",
-                    "permissions": '["shell"]', "advanced": "true",
-                })
-                self.assertEqual(response.status_code, 200)
-                if endpoint.endswith("/stream"):
-                    events = [
-                        json.loads(line.removeprefix("data: "))
-                        for line in response.get_data(as_text=True).splitlines()
-                        if line.startswith("data: ")
-                    ]
-                    result = events[-1]
-                    self.assertEqual(result["type"], "done")
-                else:
-                    result = response.json
-                image_url = f"/api/chats/{chat_id}/images/risposta.png"
-                self.assertEqual(result["reply"], f"![Diagramma]({image_url})")
-                with self.client.get(image_url) as image:
-                    self.assertEqual(image.status_code, 200)
-                    self.assertEqual(image.data, self.png)
-                history = self.client.get(f"/api/chats/{chat_id}").json
-                self.assertEqual(history[0]["content"], "Crea un diagramma")
-                self.assertEqual(history[1]["content"], result["reply"])
-                native = (self.backend.SESSION_STATE_DIR / chat_id / "events.jsonl").read_text()
-                self.assertIn("Interfaccia webchat", native)
+    def test_streaming_reply_keeps_images_in_history(self):
+        chat_id = str(uuid.uuid4())
+        response = self.client.post("/api/chat/stream", data={
+            "chat_id": chat_id, "message": "Crea un diagramma",
+            "permissions": '["shell"]',
+        })
+        self.assertEqual(response.status_code, 200)
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.get_data(as_text=True).splitlines()
+            if line.startswith("data: ")
+        ]
+        result = events[-1]
+        self.assertEqual(result["type"], "done")
+        image_url = f"/api/chats/{chat_id}/images/risposta.png"
+        self.assertEqual(result["reply"], f"![Diagramma]({image_url})")
+        with self.client.get(image_url) as image:
+            self.assertEqual(image.status_code, 200)
+            self.assertEqual(image.data, self.png)
+        history = self.client.get(f"/api/chats/{chat_id}").json
+        self.assertEqual(history[0]["content"], "Crea un diagramma")
+        self.assertEqual(history[1]["content"], result["reply"])
+        native = (self.backend.SESSION_STATE_DIR / chat_id / "events.jsonl").read_text()
+        self.assertIn("Interfaccia webchat", native)
 
 
 if __name__ == "__main__":
