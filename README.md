@@ -4,6 +4,20 @@ Una piccola chat web privata per [GitHub Copilot CLI](https://docs.github.com/co
 
 In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da browser (desktop o mobile) invece che solo da terminale.
 
+## Documentazione e memoria del progetto
+
+Per contribuire con GitHub Copilot partire da [AGENTS.md](AGENTS.md) e dal
+[contesto di ripresa](docs/SESSION.md). La documentazione separa
+[scopo e requisiti](docs/PROJECT.md), [architettura](docs/ARCHITECTURE.md),
+[decisioni](docs/DECISIONS.md), [stato e lavori aperti](docs/ROADMAP.md) e
+[verifiche](docs/TESTING.md).
+
+Copilot CLI supporta `AGENTS.md` e `.github/copilot-instructions.md` come
+istruzioni di repository; i documenti collegati vanno letti esplicitamente.
+In una nuova sessione interattiva usare `/instructions` per verificare quali
+file sono caricati e abilitati. La memoria durevole resta nei file Markdown
+da versionare, indipendentemente dal modello e dalla memoria automatica della CLI.
+
 ## Caratteristiche
 
 - **Interfaccia chat** semplice, scura, responsive (sidebar collassabile su mobile).
@@ -27,11 +41,9 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 
 Premi **Impostazioni** sotto «Nuova chat» per aprire la schermata dedicata
 nell'area principale; scegli una chat dalla sidebar o premi «Nuova chat» per
-tornare ai messaggi. La schermata riunisce il modello e le autorizzazioni
-(disponibili anche nella sidebar), le opzioni per la chat selezionata e la
-gestione dei server MCP e delle skill/plugin. Modello e autorizzazioni sono
-sincronizzati tra le due posizioni. Le impostazioni delle singole chat sono
-salvate nel database.
+tornare ai messaggi. La schermata contiene il riavvio del servizio, la gestione
+globale dei server MCP e l'elenco delle skill/plugin. Modello e modalità chat
+si scelgono nella sidebar e le impostazioni delle chat sono salvate nel database.
 
 - **Streaming e continuità**: la chat usa il flusso di eventi JSONL della CLI e
   recupera periodicamente testo e attività dei tool. Se la CLI non emette delta
@@ -43,30 +55,36 @@ salvate nel database.
   CLI con i permessi della chat. Finché il piano è in attesa, non è possibile inviare
   altri messaggi.
 - **Server MCP locali**: è possibile registrare un comando con percorso assoluto,
-  argomenti e variabili d'ambiente, abilitarlo globalmente e selezionarlo per chat.
-  Viene passato alla CLI con `--additional-mcp-config` tramite un file temporaneo
+  argomenti e variabili d'ambiente e abilitarlo globalmente. Il backend conserva
+  API di selezione per chat, ma la UI attuale non espone tale selezione e invia
+  liste MCP e permessi granulari vuote nei nuovi messaggi. Un server selezionato
+  tramite API viene passato alla CLI, nei turni con permessi compatibili,
+  con `--additional-mcp-config` tramite un file temporaneo
   privato, cancellato alla fine. La configurazione (incluse le variabili) resta in
   `~/.copilot/webchat.db`: non inserire segreti se altri utenti possono leggere il DB.
   I server già configurati direttamente nella CLI restano soggetti alle sue impostazioni
   globali; la selezione per chat riguarda solo i server creati nella webchat.
 - **Skill e plugin**: elenco in sola lettura tramite `copilot skill list --json` e
-  `copilot plugin list --json`. La CLI installata non offre un flag di selezione
-  delle skill per singola invocazione; non è possibile abilitarle per chat dalla UI.
+  `copilot plugin list --json`. Non è possibile abilitarle per chat dalla UI;
+  l'assenza di un flag CLI di selezione per invocazione è un limite documentato
+  dalla verifica precedente, da riconfermare dopo gli aggiornamenti della CLI.
 - **Comandi**: `/help`, `/usage` e `/model` sono gestiti dalla webchat, non
   inviati arbitrariamente alla CLI. All'avvio, `/model` interroga
   le completion della CLI per caricare gli ID disponibili; l'elenco riflette la
   versione installata e può includere modelli non abilitati per il proprio account.
-  Il selettore applica `/model <modello>` alla chat aperta. I permessi granulari
-  possono autorizzare pattern puntuali come `shell(git status)` o
-  `url(github.com)`, oltre ai permessi esistenti.
+  Il selettore applica `/model <modello>` alla chat aperta. Le API backend per i
+  permessi granulari accettano pattern come `shell(git status)` o
+  `url(github.com)`; la UI attuale non offre un editor per questi pattern.
   `/chronicle standup`, `tips`, `cost-tips`, `search <termine>` e `improve`
   inviano alla CLI prompt dedicati basati sulla cronologia delle sessioni; `improve`
   propone modifiche alle istruzioni senza cambiare file. `/chronicle` mostra i
   sottocomandi disponibili. `reindex` resta disponibile solo nella CLI interattiva.
-  La CLI non espone un canale di approvazione bidirezionale affidabile in modalità
-  `-p`: le richieste di conferma per singola azione **non** sono disponibili.
-Le opzioni sono state verificate con la CLI installata (versione 1.0.88);
-ricontrolla `copilot --help` dopo gli aggiornamenti per eventuali cambiamenti.
+  Le richieste di conferma per singola azione **non** sono disponibili nella
+  webchat; il limite del canale bidirezionale in modalità `-p` è documentato
+  dalla verifica precedente della CLI.
+Il riferimento della verifica precedente era CLI 1.0.88, non una garanzia di
+compatibilità con versioni successive: ricontrolla `copilot --help` dopo gli
+aggiornamenti per eventuali cambiamenti.
 Le autorizzazioni `shell` e gli strumenti MCP locali possono eseguire operazioni
 potenti: abilitali solo per configurazioni fidate.
 
@@ -80,7 +98,10 @@ potenti: abilitali solo per configurazioni fidate.
 
 ```
 copilot-webchat/
-├── app.py              # backend Flask: login, API chat, cronologia SQLite
+├── AGENTS.md           # istruzioni operative canoniche per Copilot
+├── docs/               # conoscenza durevole e contesto di ripresa
+├── tests/              # regressioni Python e Node
+├── app.py              # backend Flask: API, metadati SQLite, cronologia nativa
 └── static/
     ├── index.html      # pagina principale della chat
     ├── login.html       # pagina di login
@@ -93,7 +114,7 @@ Dati d'esecuzione (non versionati, salvati fuori dal repo in `~/.copilot/`):
 
 - `webchat_auth` — hash della password di accesso.
 - `webchat_secret` — chiave segreta per firmare i cookie di sessione Flask.
-- `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP), provenienza Auto delle risposte, stato e risultati dei lavori asincroni. La cronologia principale e i crediti restano nei dati nativi Copilot. I risultati dei lavori vengono rimossi quando elimini la chat.
+- `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP), provenienza Auto delle risposte, stato, progressi e risultati testuali dei lavori asincroni. Non è l'archivio della cronologia: cronologia principale e crediti restano nei dati nativi Copilot. I risultati dei lavori vengono rimossi quando elimini la chat.
 - `session-state/` — sessioni native Copilot, inclusi eventi e cronologia delle conversazioni. Le immagini locali mostrate nelle risposte restano nella sottocartella `files/` della sessione e vengono eliminate insieme alla chat.
 
 ## Configurazione iniziale
