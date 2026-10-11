@@ -127,10 +127,6 @@ html, body {
 .new-chat-btn:hover, .logout-btn:hover { background: #262a36; }
 .new-chat-btn.active { background: #232634; border-color: var(--accent); }
 
-.close-sidebar-btn {
-  display: none;
-}
-
 .chat-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -281,23 +277,6 @@ header h1 {
     box-shadow: 10px 0 28px rgba(0, 0, 0, 0.35);
     transition: transform 0.2s ease;
     resize: none;
-  }
-  .close-sidebar-btn {
-    display: block;
-    align-self: flex-end;
-    width: 30px;
-    height: 30px;
-    padding: 0;
-    border: 1px solid #3a3f4f;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text);
-    cursor: pointer;
-    font-size: 20px;
-    line-height: 1;
-  }
-  .close-sidebar-btn:hover {
-    background: #262a36;
   }
   .sidebar.hidden {
     margin-left: 0;

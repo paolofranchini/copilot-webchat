@@ -17,6 +17,8 @@ le cambia circa ogni 5 secondi e, quando arriva testo streaming, mostra la
 risposta parziale al posto delle frasi. Verificato inoltre che la CLI può
 salvare più messaggi dell'assistente in un singolo turno: al completamento, la
 webchat rilegge la cronologia nativa per mostrarli tutti senza reload manuale.
+Su mobile la sidebar si chiude con swipe verso sinistra o tap fuori da essa;
+resta l'hamburger per riaprirla.
 
 - Backend: migrazione SQLite, API autenticata con validazione dei percorsi,
   supporto a directory relative e passaggio della directory ai turni e
@@ -29,6 +31,8 @@ webchat rilegge la cronologia nativa per mostrarli tutti senza reload manuale.
   secondi. Le 62 frasi sono originali e verificate per unicità.
 - Cronologia live: dopo la risposta la UI ricarica gli eventi nativi della chat,
   così i messaggi intermedi dell'assistente sono visibili anche senza refresh.
+- Sidebar mobile: chiusura con swipe verso sinistra o tap esterno; movimenti
+  verticali e swipe brevi non la chiudono, e il tap hamburger resta escluso.
 - Aggiornati [README](../README.md), [ARCHITECTURE](ARCHITECTURE.md),
   [TESTING](TESTING.md) e questo handoff.
 - Commit e push richiesti dall'utente per l'insieme di modifiche descritto qui.
@@ -45,9 +49,9 @@ webchat rilegge la cronologia nativa per mostrarli tutti senza reload manuale.
   nei test di errori simulati sono attesi.
 - `node --check static/app.js`, `node tests/test_markdown.js`,
   `node tests/test_chat_history.js`, `node tests/test_message_metadata.js`,
-  `node tests/test_tool_activity.js` e `node tests/test_service_restart.js`:
-  superati. I test frontend verificano anche cronologia multipla, rotazione
-  ogni 5 secondi e arresto delle frasi all'arrivo della risposta.
+  `node tests/test_tool_activity.js`, `node tests/test_service_restart.js` e
+  `node tests/test_sidebar_swipe.js`: superati. I test frontend verificano anche
+  cronologia multipla, rotazione ogni 5 secondi e gesture sidebar.
 - `git diff --check`: superato. Nessun collaudo manuale in browser/mobile.
 
 ## Prossima azione

@@ -29,6 +29,7 @@ node tests/test_chat_history.js
 node tests/test_message_metadata.js
 node tests/test_tool_activity.js
 node tests/test_service_restart.js
+node tests/test_sidebar_swipe.js
 node --check static/app.js
 node --check static/login.js
 git diff --check
@@ -55,6 +56,7 @@ non avviare/riavviare il servizio condiviso solo per modifiche documentali.
 | [test_tool_activity.js](../tests/test_tool_activity.js) | Estrae e mostra `toolName` degli eventi CLI senza esporre gli argomenti. |
 | [test_session_names.py](../tests/test_session_names.py) | Rinomina YAML multilinea/caratteri speciali, preservazione metadati e cronologia. |
 | [test_service_restart.py](../tests/test_service_restart.py), [test_service_restart.js](../tests/test_service_restart.js) | Supervisione, blocchi job/lock, errori systemctl/timer, attesa nuova istanza e disconnessione frontend. |
+| [test_sidebar_swipe.js](../tests/test_sidebar_swipe.js) | Verifica swipe verso sinistra e tap esterno; lascia attivi sidebar, hamburger e layout desktop. |
 
 ## Controlli documentali e manuali
 

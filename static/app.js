@@ -10,7 +10,6 @@ const logoutBtn = document.getElementById("logoutBtn");
 const chatListEl = document.getElementById("chatList");
 const sidebar = document.getElementById("sidebar");
 const menuBtn = document.getElementById("menuBtn");
-const closeSidebarBtn = document.getElementById("closeSidebarBtn");
 const modelSelect = document.getElementById("modelSelect");
 const chatUsageEl = document.getElementById("chatUsage");
 const permissionModeSelects = document.querySelectorAll("[data-permission-mode]");
@@ -65,6 +64,55 @@ function syncSidebarWithViewport() {
     sidebar.classList.remove("hidden");
   }
 }
+
+function isSidebarCloseSwipe(startX, startY, endX, endY) {
+  const deltaX = endX - startX;
+  const deltaY = endY - startY;
+  return deltaX <= -72 && Math.abs(deltaX) > Math.abs(deltaY) * 1.25;
+}
+
+function isSidebarOutsideTap(target, isMobile, sidebarIsOpen, sidebarElement, menuButton) {
+  return isMobile && sidebarIsOpen
+    && !sidebarElement.contains(target) && !menuButton.contains(target);
+}
+
+document.addEventListener("pointerdown", (event) => {
+  if (isSidebarOutsideTap(
+    event.target,
+    mobileLayout.matches,
+    !sidebar.classList.contains("hidden"),
+    sidebar,
+    menuBtn,
+  )) {
+    sidebar.classList.add("hidden");
+  }
+});
+
+let sidebarTouchStart = null;
+sidebar.addEventListener("touchstart", (event) => {
+  if (!mobileLayout.matches || sidebar.classList.contains("hidden")
+    || event.touches.length !== 1) {
+    sidebarTouchStart = null;
+    return;
+  }
+  const touch = event.touches[0];
+  sidebarTouchStart = { x: touch.clientX, y: touch.clientY };
+}, { passive: true });
+sidebar.addEventListener("touchend", (event) => {
+  if (!sidebarTouchStart || !mobileLayout.matches || event.changedTouches.length !== 1) {
+    sidebarTouchStart = null;
+    return;
+  }
+  const start = sidebarTouchStart;
+  sidebarTouchStart = null;
+  const touch = event.changedTouches[0];
+  if (isSidebarCloseSwipe(start.x, start.y, touch.clientX, touch.clientY)) {
+    sidebar.classList.add("hidden");
+  }
+}, { passive: true });
+sidebar.addEventListener("touchcancel", () => {
+  sidebarTouchStart = null;
+}, { passive: true });
 
 function syncAppHeight() {
   const viewport = window.visualViewport;
@@ -1526,10 +1574,6 @@ logoutBtn.addEventListener("click", async () => {
 
 menuBtn.addEventListener("click", () => {
   sidebar.classList.toggle("hidden");
-});
-
-closeSidebarBtn.addEventListener("click", () => {
-  sidebar.classList.add("hidden");
 });
 
 async function restoreChat() {
