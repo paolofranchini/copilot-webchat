@@ -106,11 +106,41 @@ class WebchatTests(unittest.TestCase):
         help_response = self.client.post("/api/command", json={"command": "/help"})
         self.assertEqual(help_response.status_code, 200)
         self.assertIn("/chronicle", help_response.json["reply"])
+        self.assertIn("/cwd", help_response.json["reply"])
         with self.backend.app.app_context():
             model = self.backend.get_db().execute(
                 "SELECT model FROM chats WHERE id = ?", (chat_id,)
             ).fetchone()["model"]
         self.assertEqual(model, "gpt-6-sol")
+
+    def test_cwd_command_persists_valid_directory_per_chat(self):
+        chat_id = self.insert_chat()
+        self.select_chat(chat_id)
+        working_directory = self.config_dir / "directory with spaces"
+        working_directory.mkdir()
+
+        result = self.client.post("/api/command", json={
+            "command": f"/cwd {working_directory}", "chat_id": chat_id
+        })
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json["cwd"], str(working_directory.resolve()))
+        self.assertEqual(self.client.post("/api/command", json={
+            "command": "/cwd", "chat_id": chat_id
+        }).json["cwd"], str(working_directory.resolve()))
+        with self.backend.app.app_context():
+            saved_directory = self.backend.get_db().execute(
+                "SELECT working_directory FROM chats WHERE id = ?", (chat_id,)
+            ).fetchone()["working_directory"]
+        self.assertEqual(saved_directory, str(working_directory.resolve()))
+
+        invalid = self.client.post("/api/command", json={
+            "command": "/cwd /path/that/does/not/exist", "chat_id": chat_id
+        })
+        self.assertEqual(invalid.status_code, 400)
+        mismatch = self.client.post("/api/command", json={
+            "command": "/cwd", "chat_id": str(uuid.uuid4())
+        })
+        self.assertEqual(mismatch.status_code, 400)
 
     def test_stream_returns_done_event(self):
         chat_id = self.insert_chat()
@@ -171,6 +201,7 @@ class WebchatTests(unittest.TestCase):
         (folder / "workspace.yaml").write_text("name: Chat nativa\n")
         messages = [
             {"type": "user.message", "data": {"content": "parola%letterale"}},
+            {"type": "assistant.message", "data": {"content": "Prima risposta"}},
             {"type": "assistant.message", "data": {"content": "Risposta"}},
         ]
         (folder / "events.jsonl").write_text(
@@ -179,8 +210,9 @@ class WebchatTests(unittest.TestCase):
         history = self.client.get(f"/api/chats/{chat_id}")
         self.assertEqual(history.status_code, 200)
         self.assertEqual([message["content"] for message in history.json],
-                         ["parola%letterale", "Risposta"])
-        self.assertEqual([message["role"] for message in history.json], ["user", "bot"])
+                         ["parola%letterale", "Prima risposta", "Risposta"])
+        self.assertEqual([message["role"] for message in history.json],
+                         ["user", "bot", "bot"])
 
     def test_attachment_limit(self):
         files = [(io.BytesIO(b"x"), f"{index}.txt") for index in range(6)]

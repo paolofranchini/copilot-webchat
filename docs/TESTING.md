@@ -25,7 +25,9 @@ di eliminazione o riavvio.
 ```bash
 python3 -m unittest discover -s tests
 node tests/test_markdown.js
+node tests/test_chat_history.js
 node tests/test_message_metadata.js
+node tests/test_tool_activity.js
 node tests/test_service_restart.js
 node --check static/app.js
 node --check static/login.js
@@ -44,11 +46,13 @@ non avviare/riavviare il servizio condiviso solo per modifiche documentali.
 
 | Test | Scenari critici coperti dal codice dei test |
 | --- | --- |
-| [test_app.py](../tests/test_app.py) | Login/errori, chat occupata, modello, eventi e import nativo senza sovrascrivere impostazioni, limite allegati. |
-| [test_advanced.py](../tests/test_advanced.py) | CLI fittizia, SSE, piani, MCP/per-tool, Fleet rifiutata, skill, migrazione legacy, timeout/chiusura SSE. |
+| [test_app.py](../tests/test_app.py) | Login/errori, chat occupata, modello, `/cwd` e validazione directory, eventi e import nativo senza sovrascrivere impostazioni, limite allegati. |
+| [test_advanced.py](../tests/test_advanced.py) | CLI fittizia, SSE, piani, directory `/cwd` passata alla CLI, MCP/per-tool, Fleet rifiutata, skill, migrazione legacy, timeout/chiusura SSE. |
 | [test_async_chat.py](../tests/test_async_chat.py) | Job, recupero da altro client, idempotenza, chat occupata, progressi, approvazione asincrona, errori e PID non più attivo. |
+| [test_chat_history.js](../tests/test_chat_history.js) | Render della cronologia completa, inclusi più messaggi dell'assistente per turno. |
 | [test_images.py](../tests/test_images.py), [test_markdown.js](../tests/test_markdown.js) | Immagini autenticate, percorsi/symlink, formati vietati, cronologia; rendering ed escaping Markdown/URL. |
-| [test_message_usage.py](../tests/test_message_usage.py), [test_message_metadata.js](../tests/test_message_metadata.js) | Consumi sull'ultima risposta del turno, Auto nel DB, dati mancanti/zero e riga metadati. |
+| [test_message_usage.py](../tests/test_message_usage.py), [test_message_metadata.js](../tests/test_message_metadata.js) | Consumi sull'ultima risposta del turno, Auto nel DB, dati mancanti/zero, riga metadati e rotazione/arresto delle frasi di attesa. |
+| [test_tool_activity.js](../tests/test_tool_activity.js) | Estrae e mostra `toolName` degli eventi CLI senza esporre gli argomenti. |
 | [test_session_names.py](../tests/test_session_names.py) | Rinomina YAML multilinea/caratteri speciali, preservazione metadati e cronologia. |
 | [test_service_restart.py](../tests/test_service_restart.py), [test_service_restart.js](../tests/test_service_restart.js) | Supervisione, blocchi job/lock, errori systemctl/timer, attesa nuova istanza e disconnessione frontend. |
 

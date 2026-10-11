@@ -11,12 +11,18 @@ class Element {
     this.classList = {
       contains: (name) => this.className.split(" ").includes(name),
       add: (name) => { this.className += ` ${name}`; },
+      remove: (name) => { this.className = this.className.split(" ").filter((item) => item !== name).join(" "); },
     };
+    this.dataset = {};
   }
   get childElementCount() { return this.children.length; }
   setAttribute(name, value) { this.attributes[name] = value; }
   append(...children) { this.children.push(...children); }
   appendChild(child) { this.children.push(child); }
+  querySelector(selector) {
+    const className = selector.startsWith(".") ? selector.slice(1) : selector;
+    return this.children.find((child) => child.className === className) || null;
+  }
   querySelectorAll() { return []; }
 }
 
@@ -56,4 +62,20 @@ const pending = context.addMessage("Copilot sta pensando...", "bot pending");
 assert(pending.classList.contains("thinking"));
 assert.equal(pending.children[1].children.length, 3);
 assert.equal(pending.children.filter((child) => child.className === "msg-metadata").length, 0);
+const phrases = vm.runInContext("thinkingPhrases", context);
+assert(phrases.length >= 50);
+assert.equal(new Set(phrases).size, phrases.length);
+const thinkingLabel = pending.children[0];
+const firstPhrase = thinkingLabel.textContent;
+assert.notEqual(firstPhrase, "Copilot sta pensando...");
+const firstPhraseTime = Number(pending.dataset.thinkingUpdatedAt);
+const phraseInterval = vm.runInContext("THINKING_PHRASE_INTERVAL_MS", context);
+context.setThinkingMessage(pending, true, firstPhraseTime + phraseInterval - 1);
+assert.equal(thinkingLabel.textContent, firstPhrase);
+context.setThinkingMessage(pending, true, firstPhraseTime + phraseInterval);
+assert.notEqual(thinkingLabel.textContent, firstPhrase);
+pending.classList.remove("thinking");
+const finalPhrase = thinkingLabel.textContent;
+context.setThinkingMessage(pending, true);
+assert.equal(thinkingLabel.textContent, finalPhrase);
 console.log("Metadati messaggi: verifiche superate");

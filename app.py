@@ -201,6 +201,8 @@ def init_db():
             )
         if "model" not in chat_cols:
             db.execute("ALTER TABLE chats ADD COLUMN model TEXT")
+        if "working_directory" not in chat_cols:
+            db.execute("ALTER TABLE chats ADD COLUMN working_directory TEXT")
         if "usage" in chat_cols:
             db.execute("UPDATE chats SET usage = NULL")
         if "pending_plan" not in chat_cols:
@@ -809,8 +811,10 @@ def image_response_prompt(prompt, chat_id):
 
 
 def chat_args(chat_id, is_new, model, permissions, attachments, tools, servers,
-              plan, is_approval=False):
+              plan, is_approval=False, working_directory=None):
     args = [COPILOT_BIN]
+    if working_directory:
+        args += ["-C", working_directory]
     args += ["--session-id" if is_new else "--resume", chat_id, "--model", model,
              "--no-ask-user"]
     if plan:
@@ -1411,9 +1415,12 @@ def chat_stream():
         chat_id = str(uuid.uuid4())
     session["copilot_session_id"] = chat_id
     is_new = not (SESSION_STATE_DIR / chat_id).is_dir()
-    row = db.execute("SELECT model, pending_plan, tool_permissions, mcp_servers FROM chats WHERE id = ?",
+    row = db.execute("SELECT model, pending_plan, tool_permissions, mcp_servers, "
+                     "working_directory FROM chats WHERE id = ?",
                      (chat_id,)).fetchone()
     model = row["model"] or model if row else model
+    working_directory = (row["working_directory"] if row else
+                         str(Path.cwd()) if is_new else None)
     if row and row["pending_plan"]:
         for path in attachments:
             path.unlink(missing_ok=True)
@@ -1423,8 +1430,11 @@ def chat_stream():
     if row and "tool_permissions" not in data:
         requested_tools = json.loads(row["tool_permissions"])
     now = datetime.now(timezone.utc).isoformat()
-    db.execute("INSERT OR IGNORE INTO chats (id, title, created_at, permissions) VALUES (?, ?, ?, ?)",
-               (chat_id, "Sessione Copilot", now, json.dumps(permissions)))
+    db.execute(
+        "INSERT OR IGNORE INTO chats "
+        "(id, title, created_at, permissions, working_directory) VALUES (?, ?, ?, ?, ?)",
+        (chat_id, "Sessione Copilot", now, json.dumps(permissions), working_directory),
+    )
     db.execute("UPDATE chats SET permissions = ?, mcp_servers = ?, tool_permissions = ? WHERE id = ?",
                (json.dumps(permissions), json.dumps(selected_servers),
                 json.dumps(requested_tools), chat_id))
@@ -1432,7 +1442,8 @@ def chat_stream():
         args = chat_args(chat_id, is_new or row is None,
                              model,
                              permissions, copilot_attachments, requested_tools,
-                             selected_mcp_servers(db, chat_id), plan)
+                             selected_mcp_servers(db, chat_id), plan,
+                             working_directory=working_directory)
     except OSError as exc:
         for path in attachments:
             path.unlink(missing_ok=True)
@@ -1464,7 +1475,8 @@ def approve_plan():
     data = request.get_json(silent=True) or {}
     chat_id = data.get("chat_id") or session.get("copilot_session_id")
     db = get_db()
-    row = (db.execute("SELECT model, permissions, pending_plan, tool_permissions "
+    row = (db.execute("SELECT model, permissions, pending_plan, tool_permissions, "
+                      "working_directory "
                       "FROM chats WHERE id = ?", (chat_id,)).fetchone() if chat_id else None)
     if not row or not row["pending_plan"]:
         return jsonify({"error": "nessun piano in attesa"}), 409
@@ -1482,7 +1494,8 @@ def approve_plan():
     prompt = "Approvo il piano proposto. Procedi con l'implementazione."
     args = chat_args(chat_id, False, model, json.loads(row["permissions"]), [],
                          json.loads(row["tool_permissions"]),
-                         selected_mcp_servers(db, chat_id), False, is_approval=True)
+                         selected_mcp_servers(db, chat_id), False, is_approval=True,
+                         working_directory=row["working_directory"])
     if data.get("async") is True:
         return start_chat_job(
             data, chat_id,
@@ -1534,6 +1547,60 @@ def command():
         return jsonify({"error": "comando non valido"}), 400
     db = get_db()
     chat_id = session.get("copilot_session_id")
+    if parts[0] == "/cwd":
+        requested_chat_id = data.get("chat_id", chat_id)
+        if requested_chat_id is not None and (
+                not valid_session_id(requested_chat_id)
+                or requested_chat_id != chat_id):
+            return jsonify({"error": "chat non valida o non selezionata"}), 400
+        target_chat_id = requested_chat_id
+        row = (db.execute("SELECT working_directory FROM chats WHERE id = ?",
+                          (target_chat_id,)).fetchone() if target_chat_id else None)
+        native_chat = None
+        if target_chat_id and not row:
+            native_chat = read_native_chat(target_chat_id, include_messages=False)
+            if native_chat:
+                ensure_chat_import(db, native_chat)
+                row = db.execute(
+                    "SELECT working_directory FROM chats WHERE id = ?",
+                    (target_chat_id,),
+                ).fetchone()
+        metadata_cwd = (
+            read_session_metadata(SESSION_STATE_DIR / target_chat_id).get("cwd")
+            if target_chat_id and (SESSION_STATE_DIR / target_chat_id).is_dir() else None
+        )
+        current_directory = (
+            row["working_directory"] if row and row["working_directory"]
+            else metadata_cwd or str(Path.cwd())
+        )
+        if len(parts) == 1:
+            return jsonify({"reply": f"Directory corrente: {current_directory}",
+                            "cwd": current_directory})
+        if not target_chat_id:
+            return jsonify({"error": "crea o seleziona una chat per cambiare directory"}), 409
+        requested_directory = parts[1].strip()
+        if len(requested_directory) > 4096 or "\x00" in requested_directory:
+            return jsonify({"error": "directory non valida"}), 400
+        requested_path = Path(requested_directory).expanduser()
+        if not requested_path.is_absolute():
+            requested_path = Path(current_directory) / requested_path
+        try:
+            resolved_directory = requested_path.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return jsonify({"error": "directory non trovata o non accessibile"}), 400
+        if not resolved_directory.is_dir():
+            return jsonify({"error": "il percorso indicato non e' una directory"}), 400
+        now = datetime.now(timezone.utc).isoformat()
+        db.execute(
+            "INSERT OR IGNORE INTO chats "
+            "(id, title, created_at, working_directory) VALUES (?, ?, ?, ?)",
+            (target_chat_id, "Sessione Copilot", now, str(resolved_directory)),
+        )
+        db.execute("UPDATE chats SET working_directory = ? WHERE id = ?",
+                   (str(resolved_directory), target_chat_id))
+        db.commit()
+        return jsonify({"reply": f"Directory impostata: {resolved_directory}",
+                        "cwd": str(resolved_directory)})
     if parts[0] == "/model" and len(parts) == 1:
         try:
             result = subprocess.run(
@@ -1579,7 +1646,8 @@ def command():
             db.commit()
         return jsonify({"reply": f"Modello impostato: {model}", "model": model})
     if parts[0] == "/help" and len(parts) == 1:
-        return jsonify({"reply": "Comandi disponibili: /help, /usage, /model <modello>, "
+        return jsonify({"reply": "Comandi disponibili: /help, /usage, /cwd [directory], "
+                        "/model <modello>, "
                         "/chronicle standup|tips|cost-tips|search <termine>|improve"})
     if parts[0] == "/usage" and len(parts) == 1:
         usage = read_cli_usage([chat_id]).get(chat_id) if chat_id else None

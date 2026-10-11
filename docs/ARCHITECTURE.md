@@ -35,7 +35,9 @@ legacy e rimuove `messages`. Non è un import privo di effetti su disco.
   e compare solo sull'ultima risposta; dati mancanti non equivalgono a zero.
 - `webchat.db`: `chats`, `mcp_servers`, `chat_jobs`, `auto_model_responses`.
   Nessun archivio duplicato della cronologia, ma progressi e risultati dei job
-  contengono testo. Il marker Auto è associato a chat/timestamp e persiste tra browser.
+  contengono testo. `chats.working_directory` conserva la directory di lavoro
+  impostata con `/cwd`; il marker Auto è associato a chat/timestamp e persiste
+  tra browser.
 - Upload, statistiche del runner e configurazioni MCP temporanee vengono puliti
   a fine esecuzione; immagini delle risposte restano in `files/` della sessione.
 
@@ -46,10 +48,13 @@ legacy e rimuove `messages`. Non è un import privo di effetti su disco.
 2. `submitChat()` invia FormData a `POST /api/chat/stream` con `async=true` e
    UUID `request_id`. Il backend risponde `202`, registra un job e avvia un thread;
    la UI interroga `GET /api/chat/jobs/<id>`. Richieste con lo stesso ID recuperano
-   il job; l'indice SQLite limita a un job asincrono attivo per chat.
-3. `chat_args()` prepara `--session-id`/`--resume` e permessi; `run_copilot_stream()`
-   legge JSONL CLI, delta/tool e risposta finale. La route offre anche SSE diretto
-   senza `async=true`: chiuderlo termina il runner, a differenza del job asincrono.
+   il job; l'indice SQLite limita a un job asincrono attivo per chat. A job concluso
+   la UI rilegge `GET /api/chats/<id>` per rendere tutti gli eventi di messaggio
+   nativi, inclusi eventuali messaggi intermedi dell'assistente.
+3. `chat_args()` prepara `--session-id`/`--resume`, la directory selezionata con
+   `-C` e i permessi; `run_copilot_stream()` legge JSONL CLI, delta/tool e risposta
+   finale. La route offre anche SSE diretto senza `async=true`: chiuderlo termina
+   il runner, a differenza del job asincrono.
 4. Il recupero nella stessa tab usa `sessionStorage`, non ritrasmette il prompt.
    I thread non sopravvivono al server; i job con PID proprietario non più attivo
    diventano errori espliciti quando consultati.
@@ -64,8 +69,9 @@ Ask esclude strumenti; Edit abilita shell e scrittura insieme; Agent usa
 I permessi sono deleghe alla CLI, non un isolamento del sistema operativo.
 Le API MCP/per-tool esistono, ma `submitChat()` invia liste vuote: non dedurre
 disponibilità UI dalla sola presenza delle route.
-`/help`, `/usage`, `/model` sono gestiti localmente; `chroniclePrompt()` traduce
-alcuni `/chronicle` in prompt, senza esecuzione nativa del comando.
+`/help`, `/usage`, `/model` e `/cwd` sono gestiti localmente; `/cwd` persiste la
+directory per chat e la passa alle invocazioni CLI successive. `chroniclePrompt()`
+traduce alcuni `/chronicle` in prompt, senza esecuzione nativa del comando.
 
 La password è verificata con hash Werkzeug e i cookie sono firmati con chiave
 persistente. Il servizio è previsto per un singolo utente fidato su rete privata,

@@ -221,6 +221,30 @@ class ChatFeatureTests(unittest.TestCase):
             "message": "non autenticato"
         }).status_code, 401)
 
+    def test_cwd_command_is_used_for_new_chat_and_persisted(self):
+        working_directory = Path(self.home.name) / "project with spaces"
+        working_directory.mkdir()
+        new_chat = self.client.post("/api/new-chat")
+        chat_id = new_chat.json["chat_id"]
+        result = self.client.post("/api/command", json={
+            "command": f"/cwd {working_directory}", "chat_id": chat_id
+        })
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json["cwd"], str(working_directory.resolve()))
+
+        response = self.client.post("/api/chat/stream", data={
+            "message": "prova directory", "chat_id": chat_id, "permissions": "[]"
+        })
+        self.assertEqual(self.events(response)[-1]["type"], "done")
+        args = json.loads(self.args_path.read_text())
+        self.assertEqual(args[args.index("-C") + 1], str(working_directory.resolve()))
+
+        current = self.client.post("/api/command", json={
+            "command": "/cwd", "chat_id": chat_id
+        })
+        self.assertEqual(current.status_code, 200)
+        self.assertEqual(current.json["cwd"], str(working_directory.resolve()))
+
     def test_migration_preserves_existing_chats(self):
         legacy_path = Path(self.home.name) / "legacy.db"
         with sqlite3.connect(legacy_path) as db:

@@ -68,13 +68,16 @@ si scelgono nella sidebar e le impostazioni delle chat sono salvate nel database
   `copilot plugin list --json`. Non è possibile abilitarle per chat dalla UI;
   l'assenza di un flag CLI di selezione per invocazione è un limite documentato
   dalla verifica precedente, da riconfermare dopo gli aggiornamenti della CLI.
-- **Comandi**: `/help`, `/usage` e `/model` sono gestiti dalla webchat, non
+- **Comandi**: `/help`, `/usage`, `/cwd` e `/model` sono gestiti dalla webchat, non
   inviati arbitrariamente alla CLI. All'avvio, `/model` interroga
   le completion della CLI per caricare gli ID disponibili; l'elenco riflette la
   versione installata e può includere modelli non abilitati per il proprio account.
   Il selettore applica `/model <modello>` alla chat aperta. Le API backend per i
   permessi granulari accettano pattern come `shell(git status)` o
   `url(github.com)`; la UI attuale non offre un editor per questi pattern.
+  `/cwd` mostra la directory corrente della chat e `/cwd <directory>` la cambia
+  per i turni successivi; la scelta è salvata per chat e i percorsi relativi
+  partono dalla directory corrente. Serve una chat creata o selezionata.
   `/chronicle standup`, `tips`, `cost-tips`, `search <termine>` e `improve`
   inviano alla CLI prompt dedicati basati sulla cronologia delle sessioni; `improve`
   propone modifiche alle istruzioni senza cambiare file. `/chronicle` mostra i

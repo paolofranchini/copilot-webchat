@@ -423,6 +423,89 @@ function displayUserMessage(text) {
   return text === "Analizza i file allegati.\n🖼️" ? "🖼️" : text;
 }
 
+const thinkingPhrases = [
+  "Metto insieme i pezzi",
+  "Do un'occhiata in giro",
+  "Raccolgo gli indizi",
+  "Un attimo, sto verificando",
+  "Ci sono quasi, rifinisco",
+  "La risposta sta prendendo forma",
+  "Consulto il mio criceto interiore",
+  "Spolvero i circuiti",
+  "Chiedo un parere al puntatore del mouse",
+  "Faccio ordine nel cassetto delle idee",
+  "Rimetto in riga qualche parentesi",
+  "Cerco il bandolo del gomitolo",
+  "La logica ha chiesto un caffè",
+  "Sto contando fino a un numero ragionevole",
+  "Faccio una riunione lampo con i bit",
+  "Il criceto ha appena cambiato marcia",
+  "Allineo i pianeti del codice",
+  "Ripesco un pensiero caduto dietro la scrivania",
+  "Metto il cappellino da detective",
+  "Chiedo alla cache se si ricorda",
+  "Controllo che le parentesi vadano d'accordo",
+  "Sto negoziando con una virgola",
+  "Le idee stanno facendo la fila",
+  "Faccio amicizia con il problema",
+  "Cerco di non svegliare i bug",
+  "Un bit alla volta, senza spingere",
+  "Sto lucidando la risposta",
+  "Ho mandato un piccione ai neuroni",
+  "Verifico che il piano non abbia i calzini spaiati",
+  "Raccolgo le briciole di pane logiche",
+  "La risposta sta cercando parcheggio",
+  "Faccio un giro panoramico tra le possibilità",
+  "Sto convincendo un punto e virgola a collaborare",
+  "Metto in carica l'intuizione",
+  "Unisco i puntini senza uscire dai bordi",
+  "La pazienza è una feature, dicono",
+  "Sto cercando il cacciavite delle idee",
+  "Controllo il retro della lavagna",
+  "Riordino i pensieri per altezza",
+  "Faccio un piccolo tagliando alla logica",
+  "I neuroni hanno aperto una pull request",
+  "Raccolgo i pezzi prima che scappino",
+  "Sto chiedendo indicazioni alla bussola",
+  "La risposta si sta allacciando le scarpe",
+  "Avvio la modalità detective con lente d'ingrandimento",
+  "La logica sta parcheggiando in doppia fila",
+  "Faccio un controllo qualità alle idee",
+  "Sto cercando una scorciatoia che non sia una trappola",
+  "Mescolo con cura pensieri e parentesi",
+  "Un attimo: il mio alter ego sta leggendo le istruzioni",
+  "La risposta è quasi pronta per uscire di casa",
+  "Faccio un cenno d'intesa ai pixel",
+  "Sto mettendo i puntini sulle i, letteralmente",
+  "Verifico che nessun pensiero sia rimasto in bozza",
+  "Il piano sta facendo stretching",
+  "Raccolgo le idee dal pavimento",
+  "Sto dando una spazzolata ai ragionamenti",
+  "Le rotelline girano, ma con eleganza",
+  "Faccio spazio a un'idea con le valigie",
+  "La risposta sta arrivando: ha trovato traffico",
+  "Sto facendo pace con un caso limite",
+  "Un ultimo giro di giostra per la logica",
+];
+
+const THINKING_PHRASE_INTERVAL_MS = 5000;
+
+function setThinkingMessage(pending, advance = false, now = Date.now()) {
+  if (!pending.classList.contains("thinking")) return;
+  const label = pending.querySelector(".thinking-label");
+  if (!label) return;
+  const previous = Number(pending.dataset.thinkingIndex);
+  const lastUpdated = Number(pending.dataset.thinkingUpdatedAt);
+  if (advance && Number.isFinite(lastUpdated)
+    && now - lastUpdated < THINKING_PHRASE_INTERVAL_MS) return;
+  const index = Number.isInteger(previous)
+    ? advance ? (previous + 1) % thinkingPhrases.length : previous
+    : Math.floor(Math.random() * thinkingPhrases.length);
+  pending.dataset.thinkingIndex = String(index);
+  pending.dataset.thinkingUpdatedAt = String(now);
+  label.textContent = thinkingPhrases[index];
+}
+
 function addMessage(text, cls, model, ts, usage, attachments = [], autoModel = false) {
   const el = document.createElement("div");
   el.className = `msg ${cls}`;
@@ -439,6 +522,7 @@ function addMessage(text, cls, model, ts, usage, attachments = [], autoModel = f
       dots.appendChild(document.createElement("span"));
     }
     el.append(label, dots);
+    setThinkingMessage(el);
   } else if (cls.startsWith("bot")) {
     el.innerHTML = renderMarkdown(text);
     el.querySelectorAll(".message-image img").forEach((image) => {
@@ -639,7 +723,7 @@ attachmentDropzone.addEventListener("drop", (event) => {
 function updateSlashSuggestions() {
   const value = input.value.trimStart();
   const commands = [
-    "/help", "/usage", "/model ",
+    "/help", "/usage", "/cwd ", "/model ",
     "/chronicle standup", "/chronicle tips", "/chronicle cost-tips",
     "/chronicle search ", "/chronicle improve",
   ];
@@ -924,21 +1008,39 @@ async function openChat(chatId, refresh = false) {
   renderMcpServers();
   renderChatUsage();
   syncPermissions(chatPermissions.get(chatId) || []);
-  messagesEl.innerHTML = "";
-  const lastPlanIndex = msgs.findLastIndex((message) => message.role === "plan");
-  for (const [index, m] of msgs.entries()) {
-    const content = m.role === "user" ? displayUserMessage(m.content) : m.content;
+  renderChatMessages(msgs, pendingPlan);
+  sidebar.classList.add("hidden");
+  loadChatList();
+  return true;
+}
+
+function renderChatMessages(messages, hasPendingPlan) {
+  messagesEl.replaceChildren();
+  const lastPlanIndex = messages.findLastIndex((message) => message.role === "plan");
+  for (const [index, message] of messages.entries()) {
+    const content = message.role === "user" ? displayUserMessage(message.content) : message.content;
     const element = addMessage(
-      content, m.role === "user" ? "user" : "bot", m.model, m.ts, m.usage, [],
-      m.auto_model === true,
+      content, message.role === "user" ? "user" : "bot", message.model,
+      message.ts, message.usage, [], message.auto_model === true,
     );
-    if (index === lastPlanIndex && pendingPlan) {
+    if (index === lastPlanIndex && hasPendingPlan) {
       element.classList.add("pending-plan-message");
       attachPlanActions(element);
     }
   }
-  sidebar.classList.add("hidden");
-  loadChatList();
+}
+
+async function refreshChatMessages(chatId) {
+  const response = await fetch(`/api/chats/${chatId}`);
+  if (response.status === 401) {
+    window.location.href = "/login.html";
+    throw new Error("non autenticato");
+  }
+  const data = await readApiResponse(response);
+  if (!response.ok) throw new Error(data.error || "Impossibile aggiornare la cronologia");
+  if (!Array.isArray(data)) throw new Error("Formato cronologia non valido");
+  if (currentChatId !== chatId) return false;
+  renderChatMessages(data, chatPlans.get(chatId) || false);
   return true;
 }
 
@@ -993,8 +1095,8 @@ function showActivity(container, event) {
   const data = event.data || {};
   const activity = document.createElement("div");
   activity.className = "tool-activity";
-  const name = data.tool_name || data.name || data.tool || data.command || "tool";
-  activity.textContent = `Attività: ${String(name)}`;
+  const name = data.toolName || data.tool_name || data.name || data.tool || data.command || "tool";
+  activity.textContent = `Uso ${String(name)}`;
   container.append(activity);
   if (container.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -1145,6 +1247,8 @@ async function waitForJob(pending, activity) {
       pending.classList.remove("thinking");
       pending.removeAttribute("role");
       pending.textContent = data.progress.content;
+    } else {
+      setThinkingMessage(pending, true);
     }
     activity.replaceChildren();
     for (const event of data.progress?.tools || []) showActivity(activity, event);
@@ -1204,9 +1308,13 @@ async function sendCommand(text) {
     addMessage("Sottocomando /chronicle non valido. Usa /chronicle per vedere quelli disponibili; /chronicle search richiede un termine.", "error");
     return true;
   }
-  const command = text.match(/^\/(help|usage)(?:\s*)$/i) || text.match(/^\/model\s+(\S+)\s*$/i);
+  const command = text.match(/^\/(help|usage)(?:\s*)$/i)
+    || text.match(/^\/cwd(?:\s+.+)?\s*$/i)
+    || text.match(/^\/model\s+(\S+)\s*$/i);
   if (!command) return false;
-  const data = await jsonRequest("/api/command", "POST", { command: text });
+  const data = await jsonRequest("/api/command", "POST", {
+    command: text, chat_id: currentChatId || pendingChatId,
+  });
   if (data.model) {
     setModelControls(data.model);
     localStorage.setItem("copilot-model", data.model);
@@ -1246,7 +1354,8 @@ async function submitChat(e) {
   attachmentBtn.disabled = true;
   const requestedPlan = permissionModeSelects[0]?.value === "plan";
   const isCommand = attachedFiles.length === 0
-    && (/^\/(help|usage)\s*$/i.test(text) || /^\/model\s+\S+\s*$/i.test(text)
+    && (/^\/(help|usage)\s*$/i.test(text) || /^\/cwd(?:\s+.+)?\s*$/i.test(text)
+      || /^\/model\s+\S+\s*$/i.test(text)
       || /^\/chronicle(?:\s*)$/i.test(text) || /^\/chronicle\s+reindex(?:\s|$)/i.test(text)
       || /^\/chronicle\s+search\s*$/i.test(text)
       || (/^\/chronicle\b/i.test(text) && !chroniclePrompt(text)));
@@ -1305,6 +1414,7 @@ async function submitChat(e) {
       }
       loadChatList();
     }
+    let historyRefreshFailed = false;
     if (isSubmittedChatSelected(data.chat_id)) {
       if (requestedPlan) permissionModeSelects[0].value = lastPermissionMode;
       const reply = addMessage(
@@ -1315,8 +1425,14 @@ async function submitChat(e) {
         reply.classList.add("pending-plan-message");
         attachPlanActions(reply);
       }
+      try {
+        await refreshChatMessages(data.chat_id);
+      } catch (err) {
+        historyRefreshFailed = true;
+        showNotice(`Risposta ricevuta, ma cronologia non aggiornata: ${err.message}`);
+      }
     }
-    if (isSubmittedChatSelected(data.chat_id)) {
+    if (isSubmittedChatSelected(data.chat_id) && !historyRefreshFailed) {
       showNotice("");
     }
   } catch (err) {

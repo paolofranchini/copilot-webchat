@@ -4,56 +4,56 @@ Aggiornato: 2026-10-11. Stato mutabile, non trascrizione delle conversazioni.
 
 ## Stato verificato e lavoro svolto
 
-Attività completata: memoria di progetto per GitHub Copilot e rimozione del
-piano superato su richiesta dell'utente. Baseline applicativa `4de243e`
-(`Streamline chat flow and native session handling`); worktree inizialmente pulito.
-Nessun'altra attività applicativa in corso identificabile con affidabilità.
+Attività completata: implementato `/cwd` come comando locale della webchat.
+Il comando mostra la directory della chat corrente o imposta una directory
+esistente, salvata in `chats.working_directory` e passata alle successive
+invocazioni CLI tramite `-C`. Le nuove chat usano la directory del server finché
+non ne viene scelta una; le sessioni precedenti mantengono il comportamento
+esistente finché l'utente non cambia esplicitamente directory. Corretta anche
+la visualizzazione del nome tool: la CLI invia `data.toolName`, mentre la UI
+leggeva altri campi e ricadeva sul generico `tool`. L'etichetta è "Uso <tool>".
+Durante l'attesa la UI alterna 62 frasi italiane, anche umoristiche;
+le cambia circa ogni 5 secondi e, quando arriva testo streaming, mostra la
+risposta parziale al posto delle frasi. Verificato inoltre che la CLI può
+salvare più messaggi dell'assistente in un singolo turno: al completamento, la
+webchat rilegge la cronologia nativa per mostrarli tutti senza reload manuale.
 
-- Creati [AGENTS](../AGENTS.md), [PROJECT](PROJECT.md),
-  [ARCHITECTURE](ARCHITECTURE.md), [DECISIONS](DECISIONS.md),
-  [ROADMAP](ROADMAP.md), [TESTING](TESTING.md) e questo handoff.
-- Ridotte le [istruzioni Copilot](../.github/copilot-instructions.md) a un rimando
-  canonico. Riutilizzati README, istruzioni precedenti, piano, codice e test.
-- Aggiunti collegamenti nel [README](../README.md), corretti descrizione della UI
-  e contenuto testuale dei job nel DB; limiti CLI storici etichettati come tali.
-  Piano superato eliminato per ridurre il contesto, aggiornati tutti i rimandi;
-  stato e limiti conservati in ROADMAP e decisioni in DECISIONS.
-- Nessuna modifica ad applicazione, test o dipendenze. Commit e pubblicazione
-  su `origin/main` autorizzati dall'utente; lo stato di sincronizzazione è
-  verificabile in Git, senza duplicare qui hash o stato del remoto.
+- Backend: migrazione SQLite, API autenticata con validazione dei percorsi,
+  supporto a directory relative e passaggio della directory ai turni e
+  all'approvazione di un piano.
+- Frontend: comando riconosciuto nella chat e suggerito nell'autocompletamento.
+- Eventi attività: la UI mostra il nome del tool dai payload CLI senza mostrare
+  gli argomenti, che possono contenere dati sensibili.
+- Stato di attesa: frasi brevi ruotano durante il polling e si fermano appena
+  arriva il testo della risposta; il cambio è limitato a un intervallo di 5
+  secondi. Le 62 frasi sono originali e verificate per unicità.
+- Cronologia live: dopo la risposta la UI ricarica gli eventi nativi della chat,
+  così i messaggi intermedi dell'assistente sono visibili anche senza refresh.
+- Aggiornati [README](../README.md), [ARCHITECTURE](ARCHITECTURE.md),
+  [TESTING](TESTING.md) e questo handoff.
+- Commit e push richiesti dall'utente per l'insieme di modifiche descritto qui.
+  Worktree pulito all'inizio dell'attività applicativa.
 
 ## Verifiche effettive
 
-- Inventario, `git status --short`, `git log -8 --oneline` e
-  `git show --stat --oneline 4de243e`: ispezione della baseline e storia locale.
-- `python3 -m unittest discover -s tests`, con `HOME` temporaneo esterno al repo:
-  **46 test superati** su Python 3.13. Directory temporanea ripulita.
-  Log di errori attesi nei test di riavvio/dati mancanti e `ResourceWarning`
-  per connessioni SQLite non chiuse; nessun fallimento. Non corretti fuori scope.
-- `node --check static/app.js` e `node --check static/login.js`: superati.
-- `node tests/test_markdown.js`, `node tests/test_message_metadata.js`,
-  `node tests/test_service_restart.js`: superati.
-- Help ufficiale dello strumento documentazione Copilot: `AGENTS.md` e
-  `.github/copilot-instructions.md` sono percorsi supportati, `/instructions`
-  permette di consultarli. Non dimostra il caricamento dei file appena creati.
-- Prima della rimozione del piano, controllo documentale con Python: **10 documenti
-  controllati e 75 collegamenti locali esistenti**. Controllati newline/spazi
-  e `git diff --no-index --check` anche per i file nuovi.
-- `git diff --check`: superato. Diff dei file modificati e contenuti nuovi
-  rivisti per coerenza, duplicazioni e scope; solo documentazione interessata.
-- Per la rimozione documentale non sono state rieseguite le suite applicative;
-  `git diff --check` superato; controllo Python su **9 documenti e 68 link
-  locali** superato, nessun rimando residuo al file eliminato. Stato Git
-  ricontrollato: solo documentazione, nessun commit.
+- Binario configurato `/home/linuxbrew/.linuxbrew/bin/copilot`: `--help` e
+  `help commands` confermano il comando interattivo `/cwd` e l'opzione `-C`.
+  La [documentazione ufficiale CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+  è stata consultata. Non è stato eseguito un collaudo con sessione Copilot reale.
+- Suite Python completa con HOME temporanea: **48 test superati**. Include test
+  per percorsi con spazi, validazione, persistenza e flag `-C`; i log warning/error
+  nei test di errori simulati sono attesi.
+- `node --check static/app.js`, `node tests/test_markdown.js`,
+  `node tests/test_chat_history.js`, `node tests/test_message_metadata.js`,
+  `node tests/test_tool_activity.js` e `node tests/test_service_restart.js`:
+  superati. I test frontend verificano anche cronologia multipla, rotazione
+  ogni 5 secondi e arresto delle frasi all'arrivo della risposta.
+- `git diff --check`: superato. Nessun collaudo manuale in browser/mobile.
 
-## Questioni aperte e prossima azione
+## Prossima azione
 
-Non eseguiti collaudo browser/mobile, CLI reale o servizio systemd/Tailscale.
-Requisiti e priorità non stabiliti sono in PROJECT/ROADMAP.
-Il primo tentativo di questa attività era bloccato da permessi di scrittura e
-test; dopo l'abilitazione è stato ripreso, senza aggiramenti o installazioni.
-
-Prossima azione: in una sessione Copilot nuova controllare `/instructions`,
-poi leggere AGENTS, SESSION e PROJECT. Non serve riavviare il backend per questi
-soli documenti. Per nuove attività applicative usare le verifiche di TESTING e
-sostituire questo handoff con stato, risultati e prossima azione aggiornati.
+Dopo l'aggiornamento del backend, vai in Impostazioni e seleziona Riavvia
+servizio. Per sessioni CLI preesistenti con directory diverse dalla directory
+del server, il valore effettivo non è verificato su una sessione reale; `/cwd`
+legge il campo `cwd` se presente nei metadati nativi, altrimenti mostra la
+directory del server fino alla selezione esplicita di un nuovo percorso.
