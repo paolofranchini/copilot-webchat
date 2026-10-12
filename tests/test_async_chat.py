@@ -130,6 +130,35 @@ class AsyncChatTests(unittest.TestCase):
                 release.set()
                 self.wait(job_id)
 
+    def test_distinct_chats_can_run_concurrently_and_are_marked_running(self):
+        first_id, first_chat = self.start()
+        second_chat_id = str(uuid.uuid4())
+        second_id, returned_chat = self.start(chat_id=second_chat_id)
+        self.assertNotEqual(first_chat, returned_chat)
+
+        running = {}
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            chats = self.client.get("/api/chats").json
+            running = {chat["id"]: chat["running"] for chat in chats}
+            if running.get(first_chat) and running.get(second_chat_id):
+                break
+            time.sleep(0.02)
+        self.assertTrue(running.get(first_chat))
+        self.assertTrue(running.get(second_chat_id))
+
+        self.assertEqual(self.wait(first_id)["status"], "done")
+        self.assertEqual(self.wait(second_id)["status"], "done")
+
+    def test_first_message_persists_agent_permissions(self):
+        job_id, chat_id = self.start(permissions=json.dumps(["all"]))
+        self.assertEqual(self.wait(job_id)["status"], "done")
+        with self.backend.app.app_context():
+            row = self.backend.get_db().execute(
+                "SELECT permissions FROM chats WHERE id = ?", (chat_id,)
+            ).fetchone()
+        self.assertEqual(json.loads(row["permissions"]), ["all"])
+
     def test_stream_progress_plan_and_async_approval_without_mode_flag(self):
         job_id, chat_id = self.start(stream=True, plan="true")
         deadline = time.monotonic() + 2

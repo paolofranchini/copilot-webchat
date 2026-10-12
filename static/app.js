@@ -29,9 +29,9 @@ let attachedFiles = [];
 let busy = false;
 let mcpServers = [];
 let pendingPlan = false;
-let activeJob = null;
-let jobController = null;
-let wakeJob = null;
+const activeJobs = new Map();
+const jobControllers = new Map();
+const wakeJobs = new Map();
 let lastPermissionMode = "ask";
 let chatOpenRequest = 0;
 const chatPermissions = new Map();
@@ -234,7 +234,7 @@ settingsBtn.addEventListener("click", () => {
 const restartServiceBtn = document.getElementById("restartServiceBtn");
 const restartServiceStatus = document.getElementById("restartServiceStatus");
 restartServiceBtn.addEventListener("click", async () => {
-  if (busy) {
+  if (busy || activeJobs.size > 0) {
     showNotice("Attendi che Copilot termini prima di riavviare");
     return;
   }
@@ -305,6 +305,10 @@ function syncPermissions(permissions) {
     ? "agent"
     : permissions.includes("shell") || permissions.includes("write") ? "edit" : "ask";
   permissionModeSelects.forEach((select) => { select.value = lastPermissionMode; });
+}
+
+function prepareNewChatPermissions() {
+  syncPermissions(selectedPermissions());
 }
 
 permissionModeSelects.forEach((select) => {
@@ -1066,7 +1070,8 @@ async function loadChatList() {
     chatUsages.set(c.id, c.usage);
     chatPlans.set(c.id, !!c.pending_plan);
     const item = document.createElement("div");
-    item.className = "chat-item" + (c.id === currentChatId ? " active" : "");
+    item.className = "chat-item" + (c.id === currentChatId ? " active" : "")
+      + (c.running ? " running" : "");
     const titleWrap = document.createElement("span");
     titleWrap.className = "chat-title-wrap";
     const title = document.createElement("span");
@@ -1161,6 +1166,7 @@ async function openChat(chatId, refresh = false) {
   showSettings(false);
   pendingPlan = chatPlans.get(chatId) || false;
   renderMcpServers();
+  updateChatBusyState();
   renderChatUsage();
   syncPermissions(chatPermissions.get(chatId) || []);
   renderChatMessages(msgs, pendingPlan);
@@ -1211,7 +1217,7 @@ function attachPlanActions(element) {
     button.type = "button";
     button.textContent = label;
     button.addEventListener("click", async () => {
-      if (busy) return;
+      if (busy || isCurrentChatBusy()) return;
       if (path.endsWith("approve")) {
         await approvePlanAsync();
         return;
@@ -1239,11 +1245,13 @@ function attachPlanActions(element) {
         showNotice(err.message);
       } finally {
         busy = false;
+        updateChatBusyState();
       }
     });
     actions.append(button);
   }
   element.append(actions);
+  updateChatBusyState();
 }
 
 function showActivity(container, event) {
@@ -1256,11 +1264,11 @@ function showActivity(container, event) {
   if (container.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-async function streamChat(formData, pending, activity) {
+async function streamChat(formData, pending, activity, job) {
   formData.append("async", "true");
-  formData.append("request_id", activeJob.id);
-  await startJobRequest("/api/chat/stream", { method: "POST", body: formData });
-  return waitForJob(pending, activity);
+  formData.append("request_id", job.id);
+  await startJobRequest("/api/chat/stream", { method: "POST", body: formData }, job);
+  return waitForJob(job, pending, activity);
 }
 
 function newRequestId() {
@@ -1271,26 +1279,36 @@ function newRequestId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function rememberJob() {
-  sessionStorage.setItem("copilot-pending-job", JSON.stringify(activeJob));
-}
-
-function clearJob() {
-  activeJob = null;
+function rememberJob(job) {
+  activeJobs.set(job.id, job);
+  sessionStorage.setItem("copilot-pending-jobs", JSON.stringify([...activeJobs.values()]));
   sessionStorage.removeItem("copilot-pending-job");
+  updateChatBusyState();
 }
 
-function setChatBusy(value) {
-  busy = value;
-  sendBtn.disabled = value;
-  attachmentBtn.disabled = value;
-  document.querySelectorAll(".plan-actions button").forEach((button) => { button.disabled = value; });
-  renderMcpServers();
+function clearJob(job) {
+  activeJobs.delete(job.id);
+  sessionStorage.setItem("copilot-pending-jobs", JSON.stringify([...activeJobs.values()]));
+  updateChatBusyState();
 }
 
-async function jobFetch(url, options = {}) {
-  jobController = new AbortController();
-  const controller = jobController;
+function isCurrentChatBusy() {
+  const chatId = currentChatId || pendingChatId;
+  return [...activeJobs.values()].some((job) => job.chat_id === chatId);
+}
+
+function updateChatBusyState() {
+  const chatBusy = isCurrentChatBusy();
+  sendBtn.disabled = busy || chatBusy || pendingPlan;
+  attachmentBtn.disabled = busy || chatBusy || pendingPlan;
+  document.querySelectorAll(".plan-actions button").forEach((button) => {
+    button.disabled = busy || chatBusy;
+  });
+}
+
+async function jobFetch(job, url, options = {}) {
+  const controller = new AbortController();
+  jobControllers.set(job.id, controller);
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
@@ -1298,36 +1316,36 @@ async function jobFetch(url, options = {}) {
     return { res, data };
   } finally {
     clearTimeout(timeout);
-    if (jobController === controller) jobController = null;
+    if (jobControllers.get(job.id) === controller) jobControllers.delete(job.id);
   }
 }
 
-function pauseJob() {
+function pauseJob(job) {
   return new Promise((resolve) => {
     const timer = setTimeout(done, document.hidden ? 30000 : 1500);
     function done() {
       clearTimeout(timer);
-      wakeJob = null;
+      wakeJobs.delete(job.id);
       resolve();
     }
-    wakeJob = done;
+    wakeJobs.set(job.id, done);
   });
 }
 
 function resumeJob() {
   if (document.hidden) return;
-  jobController?.abort();
-  wakeJob?.();
+  for (const controller of jobControllers.values()) controller.abort();
+  for (const wake of wakeJobs.values()) wake();
 }
 document.addEventListener("visibilitychange", resumeJob);
 window.addEventListener("pageshow", resumeJob);
 window.addEventListener("online", resumeJob);
 
-async function startJobRequest(url, options) {
+async function startJobRequest(url, options, job) {
   let res;
   let data;
   try {
-    ({ res, data } = await jobFetch(url, options));
+    ({ res, data } = await jobFetch(job, url, options));
   } catch (_error) {
     showNotice("Connessione sospesa: recupero automatico della richiesta al ritorno.");
     return;
@@ -1337,104 +1355,115 @@ async function startJobRequest(url, options) {
     throw new Error("non autenticato");
   }
   if (!res.ok) {
-    clearJob();
+    clearJob(job);
     throw Object.assign(new Error(data.error || `Errore HTTP ${res.status}`), data);
   }
-  if (data.job_id !== activeJob.id || !data.chat_id) {
+  if (data.job_id !== job.id || !data.chat_id) {
     showNotice("Conferma di invio non leggibile: recupero automatico della richiesta.");
     return;
   }
-  activeJob.accepted = true;
-  activeJob.chat_id = data.chat_id;
-  rememberJob();
+  job.accepted = true;
+  job.chat_id = data.chat_id;
+  if (job.new_chat_pending && !currentChatId && !pendingChatId) {
+    pendingChatId = job.chat_id;
+  }
+  rememberJob(job);
+  loadChatList();
 }
 
-async function waitForJob(pending, activity) {
+async function waitForJob(job, pending, activity) {
   let missing = 0;
-  while (activeJob) {
+  while (activeJobs.has(job.id)) {
     if (document.hidden || !navigator.onLine) {
-      await pauseJob();
+      await pauseJob(job);
       continue;
     }
     let res;
     let data;
     try {
-      ({ res, data } = await jobFetch(`/api/chat/jobs/${activeJob.id}`));
+      ({ res, data } = await jobFetch(job, `/api/chat/jobs/${job.id}`));
     } catch (_error) {
       showNotice("Connessione sospesa: la risposta verrà recuperata automaticamente.");
-      await pauseJob();
+      await pauseJob(job);
       continue;
     }
     if (res.status === 401) {
       window.location.href = "/login.html";
       throw new Error("non autenticato");
     }
-    if (res.status === 404 && !activeJob.accepted) {
+    if (res.status === 404 && !job.accepted) {
       missing += 1;
       if (missing >= 5) {
-        clearJob();
+        clearJob(job);
         const error = new Error("Invio non confermato dal server. Controlla la cronologia prima di riprovare.");
         error.unconfirmed = true;
         throw error;
       }
-      await pauseJob();
+      await pauseJob(job);
       continue;
     }
     if (!res.ok) {
       showNotice(data.error || `Recupero risposta non disponibile (HTTP ${res.status}); nuovo tentativo automatico.`);
-      await pauseJob();
+      await pauseJob(job);
       continue;
     }
     if (!data.chat_id || !["running", "done", "error"].includes(data.status)
       || (data.status !== "running" && !data.result)) {
       showNotice("Stato della risposta non leggibile; nuovo tentativo automatico.");
-      await pauseJob();
+      await pauseJob(job);
       continue;
     }
-    activeJob.accepted = true;
-    activeJob.chat_id = data.chat_id;
-    rememberJob();
-    if (currentChatId === activeJob.chat_id
-      || (!currentChatId && pendingChatId === activeJob.chat_id)) {
+    job.accepted = true;
+    job.chat_id = data.chat_id;
+    rememberJob(job);
+    if (currentChatId === job.chat_id
+      || (!currentChatId && pendingChatId === job.chat_id)) {
       showNotice("");
     }
-    if (data.progress?.content) {
+    if (pending && data.progress?.content) {
       pending.classList.remove("thinking");
       pending.removeAttribute("role");
       pending.textContent = data.progress.content;
-    } else {
+    } else if (pending) {
       setThinkingMessage(pending, true);
     }
-    activity.replaceChildren();
-    for (const event of data.progress?.tools || []) showActivity(activity, event);
+    if (activity) {
+      activity.replaceChildren();
+      for (const event of data.progress?.tools || []) showActivity(activity, event);
+    }
+    if (data.status === "running" && !job.sidebarUpdated
+      && (data.progress?.content || data.progress?.tools?.length)) {
+      job.sidebarUpdated = true;
+      rememberJob(job);
+      loadChatList();
+    }
     if (data.status !== "running") {
-      clearJob();
+      clearJob(job);
       if (data.status === "error") {
         throw Object.assign(new Error(data.result?.error || "Errore durante l'elaborazione"), data.result);
       }
       return data.result;
     }
-    await pauseJob();
+    await pauseJob(job);
   }
 }
 
 async function approvePlanAsync() {
   const chatId = currentChatId;
-  setChatBusy(true);
-  activeJob = {
+  const job = {
     id: newRequestId(), chat_id: chatId, accepted: false,
     autoModel: modelSelect.value === "auto",
   };
-  rememberJob();
+  rememberJob(job);
   const pending = addMessage("Copilot sta eseguendo il piano...", "bot pending");
   const activity = document.createElement("div");
   messagesEl.append(activity);
   try {
     await startJobRequest("/api/chat/plan/approve", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ async: true, request_id: activeJob.id, chat_id: chatId }),
-    });
-    const data = await waitForJob(pending, activity);
+      body: JSON.stringify({ async: true, request_id: job.id, chat_id: chatId }),
+    }, job);
+    const data = await waitForJob(job, pending, activity);
     chatPlans.set(chatId, false);
     if (currentChatId === chatId) pendingPlan = false;
     await loadChatList();
@@ -1446,7 +1475,7 @@ async function approvePlanAsync() {
   } finally {
     pending.remove();
     activity.remove();
-    setChatBusy(false);
+    updateChatBusyState();
   }
 }
 
@@ -1483,7 +1512,7 @@ async function sendCommand(text) {
 
 async function submitChat(e) {
   e.preventDefault();
-  if (busy || pendingPlan) {
+  if (busy || isCurrentChatBusy() || pendingPlan) {
     if (pendingPlan) showNotice("Approva o annulla il piano prima di continuare");
     return;
   }
@@ -1505,8 +1534,7 @@ async function submitChat(e) {
 
   busy = true;
   renderMcpServers();
-  sendBtn.disabled = true;
-  attachmentBtn.disabled = true;
+  updateChatBusyState();
   const requestedPlan = permissionModeSelects[0]?.value === "plan";
   const isCommand = attachedFiles.length === 0
     && (/^\/(help|usage)\s*$/i.test(text) || /^\/cwd(?:\s+.+)?\s*$/i.test(text)
@@ -1543,12 +1571,15 @@ async function submitChat(e) {
     formData.append("tool_permissions", "[]");
     if (requestedPlan) formData.append("plan", "true");
     submittedFiles.forEach((file) => formData.append("files", file));
-    activeJob = {
+    const job = {
       id: newRequestId(), chat_id: submittedChatId, accepted: false,
       text: prompt || `[Allegati ${submittedFiles.length} file]`,
+      new_chat_pending: submittedWithoutChat,
     };
-    rememberJob();
-    const data = await streamChat(formData, pending, activity);
+    rememberJob(job);
+    busy = false;
+    updateChatBusyState();
+    const data = await streamChat(formData, pending, activity, job);
     pending.remove();
     responseChatId = data.chat_id || responseChatId;
     if (data.chat_id) {
@@ -1630,8 +1661,7 @@ async function submitChat(e) {
     activity.remove();
     busy = false;
     renderMcpServers();
-    sendBtn.disabled = false;
-    attachmentBtn.disabled = false;
+    updateChatBusyState();
     updateSlashSuggestions();
     if (!document.hidden && settingsView.hidden && isSubmittedChatSelected(responseChatId)) {
       input.focus();
@@ -1667,7 +1697,8 @@ newChatBtn.addEventListener("click", async () => {
   pendingPlan = false;
   renderMcpServers();
   renderChatUsage();
-  syncPermissions([]);
+  prepareNewChatPermissions();
+  updateChatBusyState();
   messagesEl.innerHTML = "";
   sidebar.classList.add("hidden");
   loadChatList();
@@ -1685,54 +1716,46 @@ menuBtn.addEventListener("click", () => {
 
 async function restoreChat() {
   try {
-    const stored = sessionStorage.getItem("copilot-pending-job");
-    activeJob = stored ? JSON.parse(stored) : null;
-    if (activeJob) setChatBusy(true);
+    const storedJobs = sessionStorage.getItem("copilot-pending-jobs");
+    const storedLegacyJob = sessionStorage.getItem("copilot-pending-job");
+    const restoredJobs = storedJobs
+      ? JSON.parse(storedJobs)
+      : storedLegacyJob ? [JSON.parse(storedLegacyJob)] : [];
+    if (!Array.isArray(restoredJobs)) throw new Error("Elenco delle richieste in corso non valido");
+    for (const job of restoredJobs) activeJobs.set(job.id, job);
+    sessionStorage.setItem("copilot-pending-jobs", JSON.stringify(restoredJobs));
+    sessionStorage.removeItem("copilot-pending-job");
     await loadChatList();
-    const chatId = activeJob?.chat_id || sessionStorage.getItem("copilot-current-chat");
-    let restored = false;
-    if (chatId) restored = await openChat(chatId, true);
-    if (!activeJob) return;
-    setChatBusy(true);
-    if (!restored && activeJob.text) addMessage(displayUserMessage(activeJob.text), "user");
-    const pending = addMessage("Copilot sta pensando...", "bot pending");
-    const activity = document.createElement("div");
-    messagesEl.append(activity);
-    try {
-      const data = await waitForJob(pending, activity);
-      await loadChatList();
-      const chatIsSelected = currentChatId === data.chat_id
-        || (!restored && !currentChatId && !pendingChatId);
-      if (chatIsSelected && settingsView.hidden) {
-        await openChat(data.chat_id, true);
-      }
-    } catch (err) {
-      showNotice(err.message);
-    } finally {
-      pending.remove();
-      activity.remove();
-      setChatBusy(false);
-    }
+    const chatId = sessionStorage.getItem("copilot-current-chat")
+      || restoredJobs.find((job) => job.chat_id)?.chat_id;
+    if (chatId) await openChat(chatId, true);
+    else updateChatBusyState();
+    await Promise.all(restoredJobs.map((job) => restorePendingJob(job)));
   } catch (err) {
     showNotice(`Impossibile recuperare la chat: ${err.message}`);
-    if (activeJob) {
-      const pending = addMessage("Recupero della risposta...", "bot pending");
-      const activity = document.createElement("div");
-      messagesEl.append(activity);
-      try {
-        const data = await waitForJob(pending, activity);
-        await loadChatList();
-        if (currentChatId === data.chat_id && settingsView.hidden) {
-          await openChat(data.chat_id, true);
-        }
-      } catch (error) {
-        showNotice(error.message);
-      } finally {
-        pending.remove();
-        activity.remove();
-        setChatBusy(false);
-      }
+  }
+}
+
+async function restorePendingJob(job) {
+  const showProgress = currentChatId === job.chat_id
+    || (!currentChatId && pendingChatId === job.chat_id);
+  const pending = showProgress ? addMessage("Recupero della risposta...", "bot pending") : null;
+  const activity = showProgress ? document.createElement("div") : null;
+  if (activity) messagesEl.append(activity);
+  try {
+    const data = await waitForJob(job, pending, activity);
+    await loadChatList();
+    if (currentChatId === data.chat_id && settingsView.hidden) {
+      await openChat(data.chat_id, true);
     }
+  } catch (err) {
+    if (currentChatId === job.chat_id || pendingChatId === job.chat_id) {
+      showNotice(err.message);
+    }
+  } finally {
+    pending?.remove();
+    activity?.remove();
+    updateChatBusyState();
   }
 }
 

@@ -54,14 +54,18 @@ legacy e rimuove `messages`. Non è un import privo di effetti su disco.
 2. `submitChat()` invia FormData a `POST /api/chat/stream` con `async=true` e
    UUID `request_id`. Il backend risponde `202`, registra un job e avvia un thread;
    la UI interroga `GET /api/chat/jobs/<id>`. Richieste con lo stesso ID recuperano
-   il job; l'indice SQLite limita a un job asincrono attivo per chat. A job concluso
-   la UI rilegge `GET /api/chats/<id>` per rendere tutti gli eventi di messaggio
-   nativi, inclusi eventuali messaggi intermedi dell'assistente.
+   il job; l'indice SQLite limita a un job asincrono attivo per chat, mentre la UI
+   può monitorare più job di chat distinte e disabilita l'invio solo per la chat
+   selezionata se è occupata. La lista espone lo stato in esecuzione dai job webchat
+   e dai lock nativi CLI, evidenziandolo nella sidebar. A job concluso la UI rilegge
+   `GET /api/chats/<id>` per rendere tutti gli eventi di messaggio nativi, inclusi
+   eventuali messaggi intermedi dell'assistente.
 3. `chat_args()` prepara `--session-id`/`--resume`, la directory selezionata con
    `-C` e i permessi; `run_copilot_stream()` legge JSONL CLI, delta/tool e risposta
    finale. La route offre anche SSE diretto senza `async=true`: chiuderlo termina
    il runner, a differenza del job asincrono.
-4. Il recupero nella stessa tab usa `sessionStorage`, non ritrasmette il prompt.
+4. Il recupero nella stessa tab usa `sessionStorage` per l'elenco dei job attivi,
+   non ritrasmette i prompt e resta compatibile con il precedente singolo job.
    I thread non sopravvivono al server; i job con PID proprietario non più attivo
    diventano errori espliciti quando consultati.
 5. Plan registra un marker `pending_plan`; approvazione riprende la sessione con

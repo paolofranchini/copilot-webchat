@@ -1303,6 +1303,13 @@ def list_chats():
     db = get_db()
     native_chats = native_sessions()
     usage_by_session = read_cli_usage([chat["id"] for chat in native_chats])
+    running_chat_ids = set()
+    running_jobs = db.execute(
+        "SELECT id, chat_id FROM chat_jobs WHERE status = 'running'"
+    ).fetchall()
+    for job in running_jobs:
+        if refresh_job(job["id"])["status"] == "running":
+            running_chat_ids.add(job["chat_id"])
     chats = []
     for native_chat in native_chats:
         ensure_chat_import(db, native_chat)
@@ -1320,6 +1327,8 @@ def list_chats():
             "model": row["model"],
             "usage": usage_by_session.get(native_chat["id"]),
             "pending_plan": bool(row["pending_plan"]),
+            "running": native_chat["id"] in running_chat_ids
+                or session_is_running(SESSION_STATE_DIR / native_chat["id"]),
             "mcp_servers": json.loads(row["mcp_servers"]),
             "tool_permissions": json.loads(row["tool_permissions"]),
         })

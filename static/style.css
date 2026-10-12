@@ -269,6 +269,16 @@ html, body {
   background: #232634;
   color: var(--text);
 }
+.chat-item.running {
+  background: #173323;
+  color: #c3f2cf;
+}
+.chat-item.running .chat-metadata {
+  color: #8fcca1;
+}
+.chat-item.running.active {
+  background: #20452f;
+}
 
 .model-select {
   display: flex;

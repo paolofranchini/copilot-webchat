@@ -7,7 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8")
 const handler = source.slice(source.indexOf("const restartServiceBtn ="),
   source.indexOf("function selectedPermissions("));
 
-async function scenario(responses, busy = false, confirm = true) {
+async function scenario(responses, busy = false, confirm = true, runningJob = false) {
   let click;
   let reloads = 0;
   let calls = 0;
@@ -15,6 +15,7 @@ async function scenario(responses, busy = false, confirm = true) {
   const status = { hidden: true, textContent: "" };
   const context = vm.createContext({
     busy,
+    activeJobs: new Map(runningJob ? [["job", {}]] : []),
     document: { getElementById: (id) => id === "restartServiceBtn" ? button : status },
     window: { confirm: () => confirm, location: { reload: () => { reloads += 1; } } },
     showNotice: (message) => { status.textContent = message; },
@@ -49,6 +50,7 @@ async function scenario(responses, busy = false, confirm = true) {
   assert.equal(rejected.status.textContent, "Copilot in esecuzione");
   assert.equal(rejected.button.disabled, false);
   assert.equal((await scenario([], true)).calls, 0);
+  assert.equal((await scenario([], false, true, true)).calls, 0);
   assert.equal((await scenario([], false, false)).calls, 0);
   console.log("Riavvio frontend: attesa nuova istanza, disconnessione e rifiuto verificati");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

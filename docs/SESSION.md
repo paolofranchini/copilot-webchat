@@ -2,6 +2,31 @@
 
 Aggiornato: 2026-10-12. Stato mutabile, non trascrizione delle conversazioni.
 
+## Ultima modifica — Sessioni webchat parallele e permessi nuova chat
+
+La webchat monitora job asincroni distinti in parallelo, salva l'elenco in
+`sessionStorage` e continua a recuperare ciascuno senza reinviare il prompt.
+Invio e allegati vengono disabilitati solo se la chat selezionata ha già un job;
+la sidebar mostra in verde le sessioni in esecuzione, incluse quelle con lock
+nativo CLI. Il backend espone lo stato `running` nella lista chat e mantiene il
+vincolo di un solo job per sessione.
+
+Corretto anche il reset a Ask quando si crea una nuova chat: il selettore ora
+mantiene la modalità corrente, così Agent/Edit scelti vengono inclusi nei
+permessi del primo messaggio. Il recupero accetta anche il vecchio valore
+singolo `copilot-pending-job` già presente in `sessionStorage`.
+
+Verifiche effettive: suite Python completa **66 test superati** (HOME
+temporanea); test Node e sintassi JS superati, inclusi controlli nuovi per job
+paralleli/controlli per chat, permessi Agent e riavvio con job in corso;
+`git diff --check` superato. I warning/error di CLI, riavvio e statistiche nei
+test Python sono casi simulati. Nessuna prova manuale in browser.
+
+File modificati: `app.py`, `static/app.js`, `static/style.css`, test Python e
+Node, README, ARCHITECTURE, TESTING e questo handoff. Prossima azione concreta:
+riavviare il backend dalla UI per caricare il nuovo campo `running`; poi
+verificare le sessioni parallele nel browser.
+
 ## Ultima modifica — Istruzioni di verifica
 
 Rimosse da `AGENTS.md` le indicazioni che chiedevano all'agente di fare o
