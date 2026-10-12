@@ -2,6 +2,14 @@
 
 Aggiornato: 2026-10-12. Stato mutabile, non trascrizione delle conversazioni.
 
+## Ultima modifica — Istruzioni di verifica
+
+Rimosse da `AGENTS.md` le indicazioni che chiedevano all'agente di fare o
+segnalare verifiche reali nel browser. Aggiornato `docs/TESTING.md` rimuovendo
+la checklist manuale UI/browser; le prove visuali sul dispositivo restano a
+carico dell'utente. Le istruzioni mantengono i controlli automatizzati e le
+verifiche CLI pertinenti.
+
 ## Attività corrente — PWA standalone e HTTPS locale
 
 Implementati manifest e icone PWA con `display: standalone`, e listener HTTPS
@@ -52,6 +60,38 @@ Verifiche: `node --check static/app.js`, `node --check static/pwa.js`,
 `node tests/test_service_worker.js`, `node tests/test_sidebar_swipe.js` e
 `git diff --check` superati. Controllo HTML mirato: cinque card, ognuna con
 titolo e descrizione. Nessuna prova manuale in browser svolta.
+
+## Attività corrente — Skill/plugin e dimensione testo chat
+
+Skill e plugin sono presentati con checkbox per attivare/disattivare la
+configurazione globale Copilot, valida per le sessioni future e non per la
+singola chat. I comandi CLI sono verificati rileggendo lo stato; in caso di
+errore la UI ripristina la selezione e mostra il messaggio. Le descrizioni
+vengono abbreviate e `source`/`path` non sono più mostrati.
+
+Dopo il feedback sullo screenshot, la card Skill/plugin è stata estesa a tutta
+la griglia Impostazioni e le singole voci sono disposte in schede allineate a
+due colonne, con una colonna sui viewport stretti.
+
+La card include input per aggiungere una skill da URL HTTPS diretto a `SKILL.md`
+o da percorso assoluto sul server, e un cestino sulle skill `personal-copilot`.
+La rimozione richiede conferma, è ricontrollata dal backend rispetto alla fonte
+CLI e verifica l'assenza della skill dopo il comando. Skill builtin, di progetto
+e plugin non possono essere rimosse da questa UI. Aggiunta e rimozione usano la
+CLI senza shell, con input validato e timeout; il target di aggiunta è il
+profilo personale. La UI aggiorna l'elenco al successo e mostra gli errori.
+L'origine delle skill va considerata codice/istruzioni fidati; i percorsi locali
+sono del server, non del browser.
+
+Il testo dei messaggi chat `.msg` è ridotto a `0.9em`; il codice inline usa
+`1em` rispetto al messaggio, quindi ha la stessa dimensione del testo normale.
+Sidebar, impostazioni e controlli non sono stati modificati.
+
+Aggiornati README, PROJECT, ARCHITECTURE e TESTING. I test API coprono
+autenticazione, input, timeout, errori CLI, rimozione solo della fonte personale
+e verifica post-rimozione; test UI coprono invio, reset, conferma/rifiuto ed
+errori. Suite Python completa (64 test), tutti gli script Node, controlli di
+sintassi JS e `git diff --check` superati.
 
 ## Stato verificato e lavoro svolto
 

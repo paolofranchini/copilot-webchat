@@ -75,6 +75,19 @@ Ask esclude strumenti; Edit abilita shell e scrittura insieme; Agent usa
 I permessi sono deleghe alla CLI, non un isolamento del sistema operativo.
 Le API MCP/per-tool esistono, ma `submitChat()` invia liste vuote: non dedurre
 disponibilità UI dalla sola presenza delle route.
+La UI carica skill/plugin con i comandi `list --json` della CLI e consente di
+modificarne lo stato globale con `skill|plugin enable|disable`; lo stato è
+verificato rileggendo l'elenco CLI. Sono impostazioni persistenti che riguardano
+le sessioni future, non la singola chat, e possono essere soggette a policy
+gestite o override del repository. L'aggiunta skill chiama `copilot skill add`
+senza shell, accettando solo URL HTTPS diretti a `SKILL.md` o percorsi locali
+assoluti sul server; il target predefinito della CLI è il profilo personale.
+Non è quindi possibile selezionare un file del dispositivo browser. Le skill
+personali (`source=personal-copilot`) possono essere eliminate con
+`copilot skill remove <name>` dopo conferma UI; la route ricontrolla la fonte e
+verifica l'esito rileggendo l'elenco. Skill builtin, di progetto e provenienti da
+plugin non vengono rimosse dalla webchat. Le skill sono istruzioni e possono
+includere risorse/script, perciò l'utente deve fidarsi della fonte.
 `/help`, `/usage`, `/model` e `/cwd` sono gestiti localmente; `/cwd` persiste la
 directory per chat e la passa alle invocazioni CLI successive. `chroniclePrompt()`
 traduce alcuni `/chronicle` in prompt, senza esecuzione nativa del comando.

@@ -25,6 +25,7 @@ di eliminazione o riavvio.
 ```bash
 python3 -m unittest discover -s tests
 python3 -m unittest discover -s tests -p 'test_pwa_tls.py'
+python3 -m unittest discover -s tests -p 'test_skills.py'
 node tests/test_markdown.js
 node tests/test_chat_history.js
 node tests/test_message_metadata.js
@@ -32,6 +33,7 @@ node tests/test_tool_activity.js
 node tests/test_service_restart.js
 node tests/test_sidebar_swipe.js
 node tests/test_service_worker.js
+node tests/test_skill_ui.js
 node --check static/app.js
 node --check static/login.js
 git diff --check
@@ -60,6 +62,7 @@ non avviare/riavviare il servizio condiviso solo per modifiche documentali.
 | [test_session_names.py](../tests/test_session_names.py) | Rinomina YAML multilinea/caratteri speciali, preservazione metadati e cronologia. |
 | [test_service_restart.py](../tests/test_service_restart.py), [test_service_restart.js](../tests/test_service_restart.js) | Supervisione, blocchi job/lock, errori systemctl/timer, attesa nuova istanza e disconnessione frontend. |
 | [test_sidebar_swipe.js](../tests/test_sidebar_swipe.js) | Verifica swipe verso sinistra e tap esterno; lascia attivi sidebar, hamburger e layout desktop. |
+| [test_skills.py](../tests/test_skills.py), [test_skill_ui.js](../tests/test_skill_ui.js) | Aggiunta e rimozione skill CLI, fonte personale-only, autenticazione/errori, conferma UI, toggle globale, descrizioni compatte e ripristino su errore. |
 
 ## Controlli documentali e manuali
 
@@ -70,11 +73,7 @@ contraddittorie e diff completo. In una nuova sessione interattiva Copilot,
 automaticamente il documento collegato.
 
 Le suite non verificano la CLI reale, la compatibilità dopo aggiornamenti,
-l'autenticazione Copilot, la configurazione Tailscale/systemd o il layout reale.
-I test JS estraggono funzioni e usano contesti VM/DOM simulati, non un browser.
-Per modifiche UI/browser provare desktop e mobile: sidebar/tastiera, allegati e
-incolla immagini, Markdown, sospensione/ricarica/offline durante un job,
-cambio chat con risposta attribuita all'origine e approvazione del piano.
+l'autenticazione Copilot o la configurazione Tailscale/systemd.
+I test JS estraggono funzioni e usano contesti VM/DOM simulati.
 Per modifiche di integrazione verificare help/flag della CLI installata e,
-su dati di prova, sessione nuova/resume e consumi. Dichiarare separatamente
-queste prove manuali; assenza di un errore osservato non dimostra copertura.
+su dati di prova, sessione nuova/resume e consumi.

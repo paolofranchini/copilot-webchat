@@ -24,6 +24,7 @@ from contextlib import closing
 from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, Response, g, jsonify, request, send_file, session, stream_with_context
 from werkzeug.datastructures import FileStorage
@@ -1520,8 +1521,7 @@ def update_chat_tools(chat_id):
     return jsonify({"ok": True})
 
 
-@app.route("/api/skills")
-def skills():
+def list_skills_and_plugins():
     result = {}
     for key, command in (
         ("skills", "skill"), ("plugins", "plugin")
@@ -1531,23 +1531,200 @@ def skills():
                                     capture_output=True, text=True, timeout=15)
         except (OSError, subprocess.SubprocessError) as exc:
             app.logger.error("Impossibile elencare %s: %s", key, exc)
-            return jsonify({"error": "impossibile leggere skill e plugin"}), 500
+            return None, (jsonify({"error": "impossibile leggere skill e plugin"}), 500)
         if output.returncode:
             app.logger.error("Elenco %s fallito: %s", key, output.stderr)
-            return jsonify({"error": "impossibile leggere skill e plugin"}), 500
+            return None, (jsonify({"error": "impossibile leggere skill e plugin"}), 500)
         try:
             entries = json.loads(output.stdout)
             if not isinstance(entries, list):
                 raise ValueError("formato inatteso")
             result[key] = [
                 {"name": entry.get("name"), "description": entry.get("description", ""),
-                 "source": entry.get("source", ""), "enabled": entry.get("enabled", True)}
+                 "source": entry.get("source", ""), "enabled": entry.get("enabled", True),
+                 "removable": key == "skills" and entry.get("source") == "personal-copilot"}
                 for entry in entries if isinstance(entry, dict) and isinstance(entry.get("name"), str)
             ]
         except ValueError as exc:
             app.logger.error("Elenco %s non valido: %s", key, exc)
-            return jsonify({"error": "formato skill e plugin non valido"}), 500
-    return jsonify(result)
+            return None, (jsonify({"error": "formato skill e plugin non valido"}), 500)
+    return result, None
+
+
+@app.route("/api/skills")
+def skills():
+    result, error = list_skills_and_plugins()
+    return error if error else jsonify(result)
+
+
+@app.route("/api/skills/add", methods=["POST"])
+def add_skill():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "richiesta non valida"}), 400
+    source = data.get("source")
+    if (
+        not isinstance(source, str)
+        or not source.strip()
+        or len(source) > 2048
+        or any(ord(char) < 32 or ord(char) == 127 for char in source)
+    ):
+        return jsonify({"error": "origine della skill non valida"}), 400
+
+    source = source.strip()
+    if source.startswith("https://"):
+        try:
+            parsed = urlparse(source)
+            skill_path = parsed.path.lower()
+            if (
+                not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or not (skill_path.endswith("/skill.md") or skill_path == "skill.md")
+                or parsed.fragment
+            ):
+                raise ValueError("URL skill non valido")
+            parsed.port
+        except ValueError:
+            return jsonify({
+                "error": "usa un URL HTTPS diretto a SKILL.md, senza credenziali o frammenti"
+            }), 400
+    elif source.startswith("~/"):
+        source = os.path.expanduser(source)
+    elif not os.path.isabs(source):
+        return jsonify({
+            "error": "per un file o una directory locale usa un percorso assoluto sul server"
+        }), 400
+
+    if not source.startswith("https://") and not os.path.isabs(source):
+        return jsonify({"error": "percorso locale non valido"}), 400
+
+    try:
+        result = subprocess.run(
+            [COPILOT_BIN, "skill", "add", source],
+            capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        app.logger.error("Tempo scaduto durante l'aggiunta della skill")
+        return jsonify({"error": "tempo scaduto durante l'aggiunta della skill"}), 504
+    except (OSError, subprocess.SubprocessError):
+        app.logger.exception("Impossibile avviare l'aggiunta della skill")
+        return jsonify({"error": "impossibile avviare l'aggiunta della skill"}), 500
+    if result.returncode:
+        error = result.stderr.strip() or result.stdout.strip() or "Copilot non ha aggiunto la skill"
+        app.logger.error("Comando Copilot skill add fallito (codice %s)", result.returncode)
+        return jsonify({"error": error}), 500
+    return jsonify({"ok": True})
+
+
+@app.route("/api/skills/remove", methods=["POST"])
+def remove_skill():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "richiesta non valida"}), 400
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name) > 512:
+        return jsonify({"error": "nome skill non valido"}), 400
+
+    entries, error = list_skills_and_plugins()
+    if error:
+        return error
+    entry = next(
+        (item for item in entries["skills"] if item["name"] == name), None
+    )
+    if entry is None:
+        return jsonify({"error": "skill non trovata"}), 404
+    if entry["source"] != "personal-copilot":
+        return jsonify({
+            "error": "si possono eliminare solo le skill del profilo personale"
+        }), 403
+
+    try:
+        result = subprocess.run(
+            [COPILOT_BIN, "skill", "remove", name],
+            capture_output=True, text=True, timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        app.logger.error("Tempo scaduto durante la rimozione della skill")
+        return jsonify({"error": "tempo scaduto durante la rimozione della skill"}), 504
+    except (OSError, subprocess.SubprocessError):
+        app.logger.exception("Impossibile avviare la rimozione della skill")
+        return jsonify({"error": "impossibile avviare la rimozione della skill"}), 500
+    if result.returncode:
+        error = result.stderr.strip() or result.stdout.strip() or "Copilot non ha rimosso la skill"
+        app.logger.error("Comando Copilot skill remove fallito (codice %s)", result.returncode)
+        return jsonify({"error": error}), 500
+
+    updated, error = list_skills_and_plugins()
+    if error:
+        return error
+    if any(item["name"] == name for item in updated["skills"]):
+        app.logger.error("Copilot non ha rimosso la skill %s", name)
+        return jsonify({"error": f"la skill {name} risulta ancora installata"}), 500
+    return jsonify({"ok": True})
+
+
+@app.route("/api/skills/state", methods=["PUT"])
+def update_skill_or_plugin_state():
+    data = request.get_json(silent=True) or {}
+    kind = data.get("kind")
+    name = data.get("name")
+    enabled = data.get("enabled")
+    if (
+        not isinstance(kind, str)
+        or kind not in {"skills", "plugins"}
+        or not isinstance(name, str)
+        or not name.strip()
+        or len(name) > 512
+        or not isinstance(enabled, bool)
+    ):
+        return jsonify({"error": "skill, plugin o stato non valido"}), 400
+
+    entries, error = list_skills_and_plugins()
+    if error:
+        return error
+    entry = next(
+        (item for item in entries[kind] if item["name"] == name), None
+    )
+    if entry is None:
+        return jsonify({"error": "skill o plugin non trovato"}), 404
+    if entry["enabled"] is enabled:
+        return jsonify({"ok": True, "enabled": enabled})
+
+    command = "skill" if kind == "skills" else "plugin"
+    action = "enable" if enabled else "disable"
+    try:
+        result = subprocess.run(
+            [COPILOT_BIN, command, action, name],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        app.logger.exception("Impossibile %s %s %s", action, command, name)
+        return jsonify({"error": f"impossibile {action} {command}"}), 500
+    if result.returncode:
+        app.logger.error(
+            "Comando Copilot %s %s fallito: %s",
+            action, command, result.stderr.strip(),
+        )
+        return jsonify({
+            "error": result.stderr.strip() or f"impossibile {action} {command}"
+        }), 500
+
+    updated, error = list_skills_and_plugins()
+    if error:
+        return error
+    updated_entry = next(
+        (item for item in updated[kind] if item["name"] == name), None
+    )
+    if updated_entry is None or updated_entry["enabled"] is not enabled:
+        app.logger.error(
+            "Copilot non ha applicato lo stato %s a %s %s",
+            enabled, command, name,
+        )
+        return jsonify({"error": f"Copilot non ha aggiornato lo stato di {name}"}), 500
+    return jsonify({"ok": True, "enabled": enabled})
 
 
 @app.route("/api/chat/stream", methods=["POST"])

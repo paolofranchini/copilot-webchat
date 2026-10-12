@@ -38,7 +38,7 @@ preferenza al selettore dei modelli della webchat.
   configurato e la documentazione ufficiale aggiornata. Distinguere funzioni
   native, comandi gestiti dalla webchat, prompt tradotti e funzioni non supportate.
 - Per screenshot e dettagli visuali, verificare l'elemento nel codice o nei dati;
-  distinguere fatti da ipotesi e controlli automatici da prove su browser reale.
+  distinguere fatti da ipotesi.
 
 ## Durante il lavoro
 
@@ -58,7 +58,8 @@ preferenza al selettore dei modelli della webchat.
   Non risultano build, lint o formatter configurati; non inventare comandi.
 - Eseguire test/check pertinenti; usare la suite completa per modifiche trasversali.
   Riportare comandi effettivamente eseguiti e risultati reali, includendo errori,
-  blocchi e verifiche manuali non svolte. Non dichiarare successi non verificati.
+  blocchi e verifiche automatiche non superate. Non dichiarare successi non
+  verificati.
 - Aggiornare SESSION al termine di ogni attività significativa con lavoro
   completato, file, verifiche, problemi e prossima azione concreta. Aggiornare gli
   altri documenti solo quando giustificato; non lasciare uno stato obsoleto.

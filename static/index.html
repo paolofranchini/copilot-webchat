@@ -70,10 +70,18 @@
               <button type="submit">Aggiungi server</button>
             </form>
           </section>
-          <section class="settings-card" aria-labelledby="skillsSettingsTitle">
+          <section class="settings-card skills-settings-card" aria-labelledby="skillsSettingsTitle">
             <h3 id="skillsSettingsTitle">Skill e plugin disponibili</h3>
-            <p>Elenco gestito dalla CLI; non si attiva per singola chat.</p>
+            <p>Le selezioni valgono per le sessioni future di Copilot, anche fuori dalla webchat.</p>
             <div id="skillsList">Caricamento...</div>
+            <form id="skillAddForm" class="skill-add-form">
+              <label for="skillSource">Aggiungi una skill</label>
+              <input id="skillSource" name="source" type="text" maxlength="2048"
+                     placeholder="https://…/SKILL.md oppure /percorso/server/skill"
+                     autocomplete="off" required>
+              <small>URL HTTPS a SKILL.md o percorso assoluto sul server. Aggiunge al profilo personale: usa solo fonti fidate.</small>
+              <button id="skillAddButton" type="submit">Aggiungi skill</button>
+            </form>
           </section>
         </div>
       </section>

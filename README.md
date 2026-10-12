@@ -64,10 +64,19 @@ si scelgono nella sidebar e le impostazioni delle chat sono salvate nel database
   `~/.copilot/webchat.db`: non inserire segreti se altri utenti possono leggere il DB.
   I server già configurati direttamente nella CLI restano soggetti alle sue impostazioni
   globali; la selezione per chat riguarda solo i server creati nella webchat.
-- **Skill e plugin**: elenco in sola lettura tramite `copilot skill list --json` e
-  `copilot plugin list --json`. Non è possibile abilitarle per chat dalla UI;
-  l'assenza di un flag CLI di selezione per invocazione è un limite documentato
-  dalla verifica precedente, da riconfermare dopo gli aggiornamenti della CLI.
+- **Skill e plugin**: l'elenco usa `copilot skill list --json` e
+  `copilot plugin list --json`; le checkbox attivano o disattivano gli elementi
+  con i comandi CLI corrispondenti. La modifica è globale e vale per le sessioni
+  Copilot future, anche fuori dalla webchat; policy gestite o configurazioni del
+  repository possono impedirla. Se la CLI rifiuta il comando, la UI ripristina
+  la checkbox e mostra l'errore. Il modulo permette anche di aggiungere una
+  skill da URL HTTPS diretto a `SKILL.md` o da percorso assoluto sul server,
+  usando `copilot skill add`; URL e percorsi locali sono validati e gli errori
+  della CLI vengono mostrati. I percorsi sono quelli del server, non del browser.
+  Le skill personali hanno un comando cestino con conferma; le skill integrate
+  e quelle fornite dai plugin non sono eliminabili da qui. La rimozione elimina
+  la skill dal profilo personale Copilot. Aggiungi solo skill fidate: le
+  istruzioni e gli eventuali script influenzano ciò che Copilot può fare.
 - **Comandi**: `/help`, `/usage`, `/cwd` e `/model` sono gestiti dalla webchat, non
   inviati arbitrariamente alla CLI. All'avvio, `/model` interroga
   le completion della CLI per caricare gli ID disponibili; l'elenco riflette la

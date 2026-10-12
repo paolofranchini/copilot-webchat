@@ -15,7 +15,9 @@ Fonti: [README](../README.md), [backend](../app.py) e [UI](../static/index.html)
   asincroni senza reinviare il prompt dopo una disconnessione.
 - Scegliere modello e modalità Ask/Edit/Plan/Agent; approvare o annullare un piano.
 - Mostrare immagini e metadati delle risposte, senza inventare consumi mancanti.
-- Gestire configurazioni MCP globali e consultare skill/plugin disponibili.
+- Gestire configurazioni MCP globali e consultare o attivare/disattivare
+  skill/plugin globali per le sessioni Copilot future; aggiungere skill da
+  URL HTTPS o percorso locale del server.
 - Eliminare esplicitamente una sessione e i relativi dati; applicare aggiornamenti
   del backend tramite il servizio supervisionato.
 - Installare la webchat come PWA standalone su HTTPS privato, senza modificare

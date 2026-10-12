@@ -922,6 +922,87 @@ document.getElementById("mcpForm").addEventListener("submit", async (event) => {
   }
 });
 
+function shortSkillDescription(description) {
+  const text = typeof description === "string" ? description.trim() : "";
+  if (text.length <= 110) return text;
+  const sentenceEnd = text.indexOf(". ");
+  if (sentenceEnd > 0 && sentenceEnd < 110) return text.slice(0, sentenceEnd + 1);
+  return `${text.slice(0, 107).trimEnd()}…`;
+}
+
+async function updateSkillState(kind, entry, checkbox) {
+  const requestedState = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    const result = await jsonRequest("/api/skills/state", "PUT", {
+      kind,
+      name: entry.name,
+      enabled: requestedState,
+    });
+    checkbox.checked = result.enabled;
+    checkbox.setAttribute("aria-label", `${checkbox.checked ? "Disattiva" : "Attiva"} ${entry.name}`);
+    showNotice(`${entry.name}: ${result.enabled ? "attivata" : "disattivata"} per le prossime sessioni Copilot`);
+  } catch (err) {
+    checkbox.checked = !requestedState;
+    checkbox.setAttribute("aria-label", `${checkbox.checked ? "Disattiva" : "Attiva"} ${entry.name}`);
+    showNotice(err.message);
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+
+function createSkillRow(kind, entry) {
+  const row = document.createElement("div");
+  row.className = "skill-toggle";
+
+  const label = document.createElement("label");
+  label.className = "skill-label";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = entry.enabled !== false;
+  checkbox.setAttribute("aria-label", `${checkbox.checked ? "Disattiva" : "Attiva"} ${entry.name}`);
+  checkbox.addEventListener("change", () => updateSkillState(kind, entry, checkbox));
+
+  const details = document.createElement("span");
+  details.className = "skill-details";
+  const name = document.createElement("strong");
+  name.textContent = entry.name;
+  details.append(name);
+  const description = shortSkillDescription(entry.description);
+  if (description) {
+    const summary = document.createElement("small");
+    summary.textContent = description;
+    details.append(summary);
+  }
+  label.append(checkbox, details);
+  row.append(label);
+  if (kind === "skills" && entry.removable) {
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "skill-remove";
+    removeButton.setAttribute("aria-label", `Elimina la skill ${entry.name}`);
+    removeButton.title = "Elimina skill";
+    removeButton.textContent = "🗑";
+    removeButton.addEventListener("click", async () => {
+      if (!window.confirm(`Eliminare definitivamente la skill "${entry.name}" dal profilo personale Copilot?`)) {
+        return;
+      }
+      removeButton.disabled = true;
+      try {
+        await jsonRequest("/api/skills/remove", "POST", { name: entry.name });
+        await loadSkills();
+        showNotice(`Skill ${entry.name} eliminata`);
+      } catch (err) {
+        showNotice(err.message);
+      } finally {
+        removeButton.disabled = false;
+      }
+    });
+    row.append(removeButton);
+  }
+  return row;
+}
+
 async function loadSkills() {
   try {
     const res = await fetch("/api/skills");
@@ -929,18 +1010,44 @@ async function loadSkills() {
     const data = await readApiResponse(res);
     if (!res.ok) throw new Error(data.error || "Skill non disponibili");
     skillsList.replaceChildren();
-    for (const [kind, entries] of [["Skill", data.skills || []], ["Plugin", data.plugins || []]]) {
+    for (const [kind, title, entries] of [
+      ["skills", "Skill", data.skills || []],
+      ["plugins", "Plugin", data.plugins || []],
+    ]) {
+      if (!entries.length) continue;
+      const group = document.createElement("section");
+      group.className = "skill-group";
+      const heading = document.createElement("h4");
+      heading.textContent = title;
+      group.append(heading);
       for (const entry of entries) {
-        const item = document.createElement("div");
-        item.textContent = `${kind}: ${entry.name}${entry.description ? ` — ${entry.description}` : ""}${entry.source ? ` (${entry.source})` : ""}`;
-        skillsList.append(item);
+        group.append(createSkillRow(kind, entry));
       }
+      skillsList.append(group);
     }
     if (!skillsList.childElementCount) skillsList.textContent = "Nessuna skill o plugin disponibile";
   } catch (err) {
     skillsList.textContent = err.message;
   }
 }
+
+const skillAddForm = document.getElementById("skillAddForm");
+const skillSource = document.getElementById("skillSource");
+const skillAddButton = document.getElementById("skillAddButton");
+skillAddForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  skillAddButton.disabled = true;
+  try {
+    await jsonRequest("/api/skills/add", "POST", { source: skillSource.value.trim() });
+    skillSource.value = "";
+    await loadSkills();
+    showNotice("Skill aggiunta al profilo personale Copilot");
+  } catch (err) {
+    showNotice(err.message);
+  } finally {
+    skillAddButton.disabled = false;
+  }
+});
 
 async function loadChatList() {
   const res = await fetch("/api/chats");
