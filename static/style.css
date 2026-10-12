@@ -97,6 +97,17 @@ html, body {
   cursor: pointer;
 }
 .settings-view button:disabled, .plan-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.settings-action {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid #3a3f4f;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text);
+  background: #303646;
+  text-decoration: none;
+}
+.settings-action:hover { background: #3a4254; }
 .sidebar-form { display: flex; flex-direction: column; gap: 6px; }
 .mcp-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 0; border-bottom: 1px solid #3a3f4f; }
 .mcp-row label { flex-basis: 100%; overflow-wrap: anywhere; }

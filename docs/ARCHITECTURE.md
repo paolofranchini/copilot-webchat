@@ -8,7 +8,7 @@ Scopo in [PROJECT](PROJECT.md), configurazione operativa nel [README](../README.
 | Componente | Responsabilità / evidenza |
 | --- | --- |
 | [app.py](../app.py) | Flask, autenticazione, API, SQLite, runner CLI, lavori in thread e riavvio systemd. |
-| [index.html](../static/index.html), [app.js](../static/app.js), [style.css](../static/style.css) | UI vanilla, richieste JSON/FormData, polling, rendering Markdown e immagini. |
+| [index.html](../static/index.html), [app.js](../static/app.js), [style.css](../static/style.css), [manifest.webmanifest](../static/manifest.webmanifest), [service-worker.js](../static/service-worker.js) | UI vanilla installabile in modalità standalone; service worker network-only senza cache. |
 | [login.html](../static/login.html), [login.js](../static/login.js), [login.css](../static/login.css) | Login via API e cookie Flask. |
 | GitHub Copilot CLI | Processo locale autenticato: sessioni, strumenti, modelli, MCP, statistiche. |
 | SQLite / filesystem | Dati separati per responsabilità, descritti sotto. |
@@ -19,7 +19,13 @@ Le altre importazioni backend sono della libreria standard. Nessun manifest di
 dipendenze con versioni bloccate o pipeline CI è versionato.
 Node serve ai controlli JS, non all'esecuzione del server.
 Il codice imposta `COPILOT_BIN = /home/linuxbrew/.linuxbrew/bin/copilot`,
-timeout CLI di 300 secondi e ascolto `0.0.0.0:7890`; l'host reale va verificato.
+timeout CLI di 300 secondi e ascolto HTTP `0.0.0.0:7890`. All'avvio tenta di
+avviare HTTPS su `0.0.0.0:7891` con una CA locale in `~/.copilot/webchat_tls/`;
+un errore TLS viene registrato e non disabilita HTTP. La route autenticata
+`/api/tls/ca` serve solo il certificato pubblico della CA, mai le chiavi.
+Manifest, icone, helper PWA e service worker sono pubblici; il service worker
+inoltra le richieste direttamente alla rete senza cache, e la PWA non è offline.
+L'host reale va verificato.
 
 ## Dati e fonti autorevoli
 

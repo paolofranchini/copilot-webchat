@@ -94,6 +94,7 @@ potenti: abilitali solo per configurazioni fidate.
 ## Requisiti
 
 - Python 3.10+ con Flask installato (`pip install flask`).
+- OpenSSL installato per il listener HTTPS facoltativo.
 - [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli) installata e autenticata sulla stessa macchina.
 - (Consigliato) una rete privata come Tailscale per esporre il servizio solo ai propri dispositivi.
 
@@ -107,6 +108,8 @@ copilot-webchat/
 ├── app.py              # backend Flask: API, metadati SQLite, cronologia nativa
 └── static/
     ├── index.html      # pagina principale della chat
+    ├── manifest.webmanifest # installazione PWA in modalità standalone
+    ├── service-worker.js # pass-through rete, senza cache offline
     ├── login.html       # pagina di login
     ├── style.css        # stile chat
     ├── login.css         # stile login
@@ -152,6 +155,24 @@ python3 app.py
 ```
 
 Il servizio si mette in ascolto su `http://0.0.0.0:7890`.
+Con OpenSSL installato, avvia anche HTTPS su tutte le interfacce alla porta
+`7891`. Il listener HTTPS genera al primo avvio una CA locale e un certificato
+per gli hostname e gli indirizzi privati/Tailscale rilevati; la CA e le chiavi restano in
+`~/.copilot/webchat_tls/` (directory privata, chiavi non scaricabili). Se TLS
+non è disponibile, l'errore viene scritto nei log e HTTP continua a funzionare.
+La porta 7890 e il relativo URL non cambiano.
+
+### HTTPS e installazione come app
+
+1. Dopo aver aggiornato il backend, vai in **Impostazioni** e seleziona **Riavvia servizio**. In alternativa, riavvia il servizio secondo la modalità d'installazione.
+2. Apri l'indirizzo HTTP già in uso dalla rete privata Tailscale ed effettua il login.
+3. Vai in **Impostazioni → Generali** e scarica il certificato CA. Scaricalo solo attraverso la connessione Tailscale fidata: installarlo significa autorizzare sul dispositivo i certificati firmati da questa CA privata.
+4. Installa il certificato sul dispositivo come CA attendibile. Su iOS occorre anche abilitare la fiducia completa in **Impostazioni → Generali → Info → Impostazioni attendibilità certificati**; su Android la procedura per installare una CA utente varia in base alla versione.
+5. Apri in browser `https://<ip-locale>:7891`, usando lo stesso nome/IP locale di prima e cambiando solo schema e porta. Dopo il login, usa **Installa app** dal menu del browser; una voce separata **Aggiungi a schermata Home** può creare soltanto una scorciatoia. La modalità `standalone` apre la chat senza la barra del browser quando il browser supporta l'installazione PWA.
+
+La porta 7891 deve essere raggiungibile dal dispositivo sulla rete privata. Se l'IP cambia, riavvia il servizio per rigenerare il certificato con gli indirizzi correnti. Se OpenSSL o il listener HTTPS non sono disponibili, controlla i log del servizio. Il certificato CA è scaricabile solo dopo il login; la chiave privata non viene mai esposta dall'API.
+
+Il service worker inoltra le richieste direttamente alla rete: non mette in cache HTML, API, credenziali o cronologia. La PWA non funziona offline. Le risorse PWA pubbliche (manifest, icone e service worker) sono accessibili senza login; le pagine e i dati dell'app restano protetti.
 
 I lavori asincroni continuano finché il processo Flask resta attivo: un riavvio
 del server interrompe quelli in corso, che vengono segnalati come interrotti

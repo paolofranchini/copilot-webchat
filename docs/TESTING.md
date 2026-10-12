@@ -24,12 +24,14 @@ di eliminazione o riavvio.
 
 ```bash
 python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests -p 'test_pwa_tls.py'
 node tests/test_markdown.js
 node tests/test_chat_history.js
 node tests/test_message_metadata.js
 node tests/test_tool_activity.js
 node tests/test_service_restart.js
 node tests/test_sidebar_swipe.js
+node tests/test_service_worker.js
 node --check static/app.js
 node --check static/login.js
 git diff --check
@@ -52,6 +54,7 @@ non avviare/riavviare il servizio condiviso solo per modifiche documentali.
 | [test_async_chat.py](../tests/test_async_chat.py) | Job, recupero da altro client, idempotenza, chat occupata, progressi, approvazione asincrona, errori e PID non più attivo. |
 | [test_chat_history.js](../tests/test_chat_history.js) | Render della cronologia completa, inclusi più messaggi dell'assistente per turno. |
 | [test_images.py](../tests/test_images.py), [test_markdown.js](../tests/test_markdown.js) | Immagini autenticate, percorsi/symlink, formati vietati, cronologia; rendering ed escaping Markdown/URL. |
+| [test_pwa_tls.py](../tests/test_pwa_tls.py), [test_service_worker.js](../tests/test_service_worker.js) | Asset PWA pubblici, manifest e icone, download autenticato della sola CA, generazione/verifica TLS, worker network-only senza cache (OpenSSL richiesto per test TLS). |
 | [test_message_usage.py](../tests/test_message_usage.py), [test_message_metadata.js](../tests/test_message_metadata.js) | Consumi sull'ultima risposta del turno, Auto nel DB, dati mancanti/zero, riga metadati e rotazione/arresto delle frasi di attesa. |
 | [test_tool_activity.js](../tests/test_tool_activity.js) | Estrae e mostra `toolName` degli eventi CLI senza esporre gli argomenti. |
 | [test_session_names.py](../tests/test_session_names.py) | Rinomina YAML multilinea/caratteri speciali, preservazione metadati e cronologia. |

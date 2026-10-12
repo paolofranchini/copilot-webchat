@@ -57,3 +57,15 @@ Su richiesta dell'utente, il piano superato è stato rimosso per ridurre il
 contesto e la duplicazione: stato e limiti restano in ROADMAP, decisioni qui.
 La rimozione non implica completamento delle funzionalità originariamente
 proposte; la fonte storica resta recuperabile da Git.
+
+## D6 — HTTPS locale e PWA standalone senza modalità offline (nuova)
+
+Il listener HTTP esistente sulla porta 7890 resta invariato; HTTPS usa la porta
+7891 e una CA locale persistente in `~/.copilot/webchat_tls/`. Il certificato
+CA è scaricabile solo autenticati, la chiave CA non viene esposta; il dispositivo
+deve fidarsi esplicitamente della CA per aprire l'URL HTTPS con certificato
+valido. La PWA usa `display: standalone` e un service worker network-only:
+presente per supportare l'installabilità, non salva API, sessioni o conversazioni
+e non offre uso offline. Manifest, icone e worker sono pubblici, mentre il resto
+della webchat mantiene l'autenticazione. Contesto e istruzioni d'installazione sono nel
+[README](../README.md); il flusso TLS è in [ARCHITECTURE](ARCHITECTURE.md).

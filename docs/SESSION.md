@@ -1,6 +1,57 @@
 # Contesto di ripresa
 
-Aggiornato: 2026-10-11. Stato mutabile, non trascrizione delle conversazioni.
+Aggiornato: 2026-10-12. Stato mutabile, non trascrizione delle conversazioni.
+
+## Attività corrente — PWA standalone e HTTPS locale
+
+Implementati manifest e icone PWA con `display: standalone`, e listener HTTPS
+sulla porta 7891 senza cambiare la porta HTTP 7890. All'avvio viene creata una
+CA locale persistente e un certificato server con gli hostname/IP privati e
+Tailscale rilevati. Solo il certificato pubblico CA è scaricabile, dopo login,
+da **Impostazioni → Generali**; le chiavi private rimangono in
+`~/.copilot/webchat_tls/` con permessi privati.
+
+Dopo aver verificato il messaggio Edge «Questa app non può essere installata»,
+aggiunti service worker network-only, registrazione in pagine app e login,
+asset PWA pubblici (per renderli reperibili anche prima dell'autenticazione) e
+icona maskable con logo entro l'area sicura. Il worker inoltra le fetch
+direttamente alla rete e non usa Cache API: niente cache offline di API/chat.
+Per installare scegliere la voce browser **Installa app**; la voce per creare
+una scorciatoia Home non implica l'installazione standalone.
+
+Suite Python completa dopo la correzione: **53 test superati** (HOME
+temporanea). Test TLS verificano firma CA/SAN/permessi/handshake HTTPS; test
+PWA verificano asset pubblici e manifest; test JS verifica lifecycle e
+pass-through network-only senza cache. `git diff --check` e controlli JS
+superati. La schermata Edge condivisa è precedente alla correzione; nessuna
+prova manuale di installazione sulla versione aggiornata ancora eseguita.
+
+Al controllo successivo all'implementazione, le porte 7890/7891 risultavano
+in ascolto e i certificati locali erano presenti; handshake HTTPS completato
+con risposta 401 prevista perché la richiesta di prova era anonima. non è stato
+scaricato/installato il certificato su un dispositivo mobile durante quella
+verifica; in seguito l'utente ha installato la CA e verificato Firefox.
+Prossima azione dopo aggiornamento e riavvio backend: riprovare l'opzione Edge
+**Installa**, quindi verificare avvio standalone senza barra. Non installare la
+CA su dispositivi non fidati.
+
+File modificati: `app.py`, pagine e script PWA, manifest, icone PNG,
+`tests/test_pwa_tls.py`, `tests/test_service_worker.js`, `README.md` e documenti
+architettura, progetto, decisioni, test e sessione.
+
+## Ultima modifica — Organizzazione impostazioni
+
+Il pannello Impostazioni è stato suddiviso in card indipendenti: Sessioni,
+HTTPS e installazione, Riavvio servizio, Server MCP e Skill/plugin. Ogni card
+ha un titolo e una descrizione breve; la spiegazione CA è stata ridotta e il
+download è presentato come pulsante. Gli ID e i controlli esistenti del riavvio,
+MCP e skill sono stati mantenuti.
+
+Verifiche: `node --check static/app.js`, `node --check static/pwa.js`,
+`node --check static/service-worker.js`, `node tests/test_service_restart.js`,
+`node tests/test_service_worker.js`, `node tests/test_sidebar_swipe.js` e
+`git diff --check` superati. Controllo HTML mirato: cinque card, ognuna con
+titolo e descrizione. Nessuna prova manuale in browser svolta.
 
 ## Stato verificato e lavoro svolto
 

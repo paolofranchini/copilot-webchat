@@ -3,7 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#171922">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Copilot Webchat">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Copilot CLI Webchat @ raspberrypi</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -38,15 +44,25 @@
       <section id="settingsView" class="settings-view" aria-labelledby="settingsTitle" hidden>
         <h2 id="settingsTitle" tabindex="-1">Impostazioni</h2>
         <div class="settings-grid">
-          <section class="settings-card" aria-labelledby="generalTitle">
-            <h3 id="generalTitle">Generali</h3>
-            <p>La sidebar mostra le sessioni native di Copilot. Eliminare una sessione rimuove definitivamente i relativi file e la cronologia.</p>
+          <section class="settings-card" aria-labelledby="sessionsSettingsTitle">
+            <h3 id="sessionsSettingsTitle">Sessioni</h3>
+            <p>La sidebar mostra le sessioni native Copilot. Eliminarne una rimuove definitivamente cronologia e file.</p>
+          </section>
+          <section class="settings-card" aria-labelledby="httpsSettingsTitle">
+            <h3 id="httpsSettingsTitle">HTTPS e installazione</h3>
+            <p>Scarica la CA per fidarti del certificato HTTPS su questo dispositivo.</p>
+            <a class="settings-action" href="/api/tls/ca">Scarica certificato CA</a>
+            <small>HTTPS: porta 7891 · HTTP: porta 7890 · Non disponibile offline.</small>
+          </section>
+          <section class="settings-card" aria-labelledby="restartSettingsTitle">
+            <h3 id="restartSettingsTitle">Riavvio servizio</h3>
+            <p>Applica gli aggiornamenti del backend. Richiede systemd e nessuna sessione Copilot in esecuzione.</p>
             <button id="restartServiceBtn" type="button">Riavvia servizio</button>
-            <p>Applica gli aggiornamenti del backend. Richiede il servizio systemd e nessuna sessione Copilot in esecuzione.</p>
             <p id="restartServiceStatus" role="status" aria-live="polite" hidden></p>
           </section>
           <section class="settings-card" aria-labelledby="mcpSettingsTitle">
             <h3 id="mcpSettingsTitle">Server MCP disponibili</h3>
+            <p>Gestisci i server MCP configurati nella webchat.</p>
             <div id="mcpConfigList"></div>
             <form id="mcpForm" class="sidebar-form">
               <input id="mcpName" placeholder="Nome server" aria-label="Nome server" required>
@@ -56,8 +72,8 @@
           </section>
           <section class="settings-card" aria-labelledby="skillsSettingsTitle">
             <h3 id="skillsSettingsTitle">Skill e plugin disponibili</h3>
+            <p>Elenco gestito dalla CLI; non si attiva per singola chat.</p>
             <div id="skillsList">Caricamento...</div>
-            <small>Gestiti dalla CLI; non attivabili per singola chat.</small>
           </section>
         </div>
       </section>
@@ -82,6 +98,7 @@
     </div>
   </div>
 
+  <script src="/pwa.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

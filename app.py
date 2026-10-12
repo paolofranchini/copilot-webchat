@@ -5,6 +5,7 @@ Espone un'interfaccia web che invoca `copilot -p` in modalità non interattiva,
 mantenendo la continuità della conversazione tramite --session-id / --resume.
 Pensato per essere raggiunto solo via Tailscale (rete privata).
 """
+import ipaddress
 import json
 import math
 import mimetypes
@@ -13,6 +14,7 @@ import re
 import selectors
 import shutil
 import sqlite3
+import socket
 import subprocess
 import tempfile
 import threading
@@ -26,6 +28,7 @@ from pathlib import Path
 from flask import Flask, Response, g, jsonify, request, send_file, session, stream_with_context
 from werkzeug.datastructures import FileStorage
 from werkzeug.security import check_password_hash
+from werkzeug.serving import make_server
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CONFIG_DIR = Path.home() / ".copilot"
@@ -43,6 +46,9 @@ AUTH_FILE = CONFIG_DIR / "webchat_auth"
 PASSWORD_HASH = AUTH_FILE.read_text().strip() if AUTH_FILE.exists() else None
 
 DB_PATH = CONFIG_DIR / "webchat.db"
+TLS_DIR = CONFIG_DIR / "webchat_tls"
+TLS_CA_CERT = TLS_DIR / "ca.crt"
+TLS_PORT = 7891
 COPILOT_BIN = "/home/linuxbrew/.linuxbrew/bin/copilot"
 TIMEOUT_SECONDS = 300
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
@@ -70,6 +76,169 @@ ENV_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 SERVICE_INSTANCE_ID = uuid.uuid4().hex
 SERVICE_RESTART_LOCK = threading.Lock()
 service_restarting = False
+
+
+def collect_tls_subject_alt_names():
+    """Raccoglie hostname e indirizzi privati con cui si raggiunge il servizio."""
+    names = {"DNS:localhost", "IP:127.0.0.1", "IP:::1"}
+    for hostname in (socket.gethostname(), socket.getfqdn()):
+        hostname = hostname.rstrip(".").lower()
+        if len(hostname) <= 253 and all(
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in hostname.split(".")
+        ):
+            names.add(f"DNS:{hostname}")
+
+    addresses = set()
+    tailscale = shutil.which("tailscale")
+    if tailscale:
+        try:
+            result = subprocess.run(
+                [tailscale, "ip"], capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0:
+                addresses.update(result.stdout.split())
+        except (OSError, subprocess.SubprocessError):
+            app.logger.warning("Impossibile rilevare gli indirizzi Tailscale")
+
+    ip_command = shutil.which("ip")
+    if ip_command:
+        try:
+            result = subprocess.run(
+                [ip_command, "-j", "address", "show"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                for interface in json.loads(result.stdout):
+                    for address in interface.get("addr_info", []):
+                        addresses.add(address.get("local", ""))
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            app.logger.warning("Impossibile rilevare gli indirizzi di rete locali")
+
+    tailscale_network = ipaddress.ip_network("100.64.0.0/10")
+    for value in addresses:
+        try:
+            address = ipaddress.ip_address(value.split("%", 1)[0])
+        except ValueError:
+            continue
+        if (
+            address.is_loopback or address.is_link_local
+            or address.is_multicast or address.is_unspecified
+        ):
+            continue
+        if address.is_private or address in tailscale_network:
+            names.add(f"IP:{address}")
+    return sorted(names)
+
+
+def ensure_tls_certificates(tls_dir, subject_alt_names):
+    """Crea una CA privata persistente e rinnova il certificato server locale."""
+    openssl = shutil.which("openssl")
+    if not openssl:
+        raise RuntimeError("openssl non è installato")
+
+    tls_dir = Path(tls_dir)
+    tls_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tls_dir.chmod(0o700)
+    ca_cert = tls_dir / "ca.crt"
+    ca_key = tls_dir / "ca.key"
+    server_cert = tls_dir / "server.crt"
+    server_key = tls_dir / "server.key"
+    if ca_cert.exists() != ca_key.exists():
+        raise RuntimeError("configurazione CA incompleta in webchat_tls")
+
+    def run_openssl(arguments):
+        result = subprocess.run(
+            [openssl, *arguments], capture_output=True, text=True, timeout=30
+        )
+        if result.returncode:
+            detail = result.stderr.strip().splitlines()
+            message = detail[-1] if detail else "errore OpenSSL"
+            raise RuntimeError(message)
+
+    with tempfile.TemporaryDirectory(prefix=".tls-", dir=tls_dir) as temporary:
+        temporary = Path(temporary)
+        if not ca_cert.exists():
+            generated_ca_key = temporary / "ca.key"
+            generated_ca_cert = temporary / "ca.crt"
+            run_openssl([
+                "req", "-x509", "-newkey", "rsa:3072", "-nodes", "-sha256",
+                "-days", "3650", "-keyout", str(generated_ca_key),
+                "-out", str(generated_ca_cert), "-subj",
+                "/CN=Copilot Webchat Local CA", "-addext",
+                "basicConstraints=critical,CA:TRUE,pathlen:0", "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign",
+            ])
+            os.chmod(generated_ca_key, 0o600)
+            os.replace(generated_ca_key, ca_key)
+            os.replace(generated_ca_cert, ca_cert)
+
+        if not server_key.exists():
+            generated_server_key = temporary / "server.key"
+            run_openssl([
+                "genpkey", "-algorithm", "RSA", "-pkeyopt",
+                "rsa_keygen_bits:2048", "-out", str(generated_server_key),
+            ])
+            os.chmod(generated_server_key, 0o600)
+            os.replace(generated_server_key, server_key)
+        else:
+            os.chmod(server_key, 0o600)
+        os.chmod(ca_key, 0o600)
+
+        csr = temporary / "server.csr"
+        extensions = temporary / "server.ext"
+        generated_server_cert = temporary / "server.crt"
+        names = sorted(set(subject_alt_names) | {
+            "DNS:localhost", "IP:127.0.0.1", "IP:::1",
+        })
+        if any(not re.fullmatch(
+            r"(?:DNS:[a-z0-9.-]{1,253}|IP:(?:[0-9a-fA-F:.]+))", name
+        ) for name in names):
+            raise ValueError("nome alternativo del certificato non valido")
+        extensions.write_text(
+            f"subjectAltName = {','.join(names)}\n"
+            "basicConstraints = critical,CA:FALSE\n"
+            "keyUsage = critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage = serverAuth\n"
+        )
+        run_openssl([
+            "req", "-new", "-key", str(server_key), "-out", str(csr),
+            "-subj", "/CN=Copilot CLI Webchat",
+        ])
+        run_openssl([
+            "x509", "-req", "-in", str(csr), "-CA", str(ca_cert),
+            "-CAkey", str(ca_key), "-CAserial", str(tls_dir / "ca.srl"),
+            "-CAcreateserial", "-out", str(generated_server_cert),
+            "-days", "825", "-sha256", "-extfile", str(extensions),
+        ])
+        os.replace(generated_server_cert, server_cert)
+    return ca_cert, server_cert, server_key
+
+
+def start_https_listener():
+    """Avvia HTTPS in parallelo; un problema TLS non interrompe la porta HTTP."""
+    try:
+        ca_cert, server_cert, server_key = ensure_tls_certificates(
+            TLS_DIR, collect_tls_subject_alt_names()
+        )
+        server = make_server(
+            "0.0.0.0", TLS_PORT, app, threaded=True,
+            ssl_context=(str(server_cert), str(server_key)),
+        )
+        worker = threading.Thread(
+            target=server.serve_forever, name="webchat-https", daemon=True
+        )
+        worker.start()
+    except Exception:
+        app.logger.exception(
+            "HTTPS non disponibile sulla porta %s; HTTP resta attivo sulla 7890",
+            TLS_PORT,
+        )
+        return False
+    app.logger.info(
+        "HTTPS attivo sulla porta %s; certificato CA: %s", TLS_PORT, ca_cert
+    )
+    return True
 
 
 def get_db():
@@ -629,7 +798,12 @@ class CopilotRunError(RuntimeError):
 
 @app.before_request
 def require_login():
-    open_paths = {"/login", "/api/login", "/login.html", "/login.css", "/login.js"}
+    open_paths = {
+        "/login", "/api/login", "/login.html", "/login.css", "/login.js",
+        "/manifest.webmanifest", "/pwa.js", "/service-worker.js",
+        "/icon-180.png", "/icon-192.png", "/icon-512.png",
+        "/icon-maskable-512.png",
+    }
     if request.path in open_paths:
         return None
     if session.get("authenticated"):
@@ -1059,6 +1233,20 @@ def logout():
 def service_status():
     return jsonify({"instance_id": SERVICE_INSTANCE_ID,
                     "restarting": service_restarting})
+
+
+@app.route("/api/tls/ca")
+def download_tls_ca():
+    if not TLS_CA_CERT.is_file():
+        return jsonify({"error": "certificato CA non disponibile; controlla i log del servizio"}), 503
+    response = send_file(
+        TLS_CA_CERT, mimetype="application/x-pem-file",
+        as_attachment=True, download_name="copilot-webchat-ca.crt",
+        conditional=False,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @app.route("/api/service/restart", methods=["POST"])
@@ -1664,4 +1852,5 @@ def new_chat():
 
 
 if __name__ == "__main__":
+    start_https_listener()
     app.run(host="0.0.0.0", port=7890)

@@ -18,6 +18,8 @@ Fonti: [README](../README.md), [backend](../app.py) e [UI](../static/index.html)
 - Gestire configurazioni MCP globali e consultare skill/plugin disponibili.
 - Eliminare esplicitamente una sessione e i relativi dati; applicare aggiornamenti
   del backend tramite il servizio supervisionato.
+- Installare la webchat come PWA standalone su HTTPS privato, senza modificare
+  l'accesso HTTP esistente né mettere in cache conversazioni o API.
 
 Sono comportamenti riscontrati nel codice e nei test, non una dichiarazione di
 collaudo in produzione. [ROADMAP](ROADMAP.md) distingue stato, limiti e proposte.
