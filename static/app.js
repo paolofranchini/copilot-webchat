@@ -24,7 +24,9 @@ const skillsList = document.getElementById("skillsList");
 const slashSuggestions = document.getElementById("slashSuggestions");
 
 let currentChatId = null;
+let currentChatProvider = null;
 let pendingChatId = null;
+let pendingChatProvider = "cli";
 let attachedFiles = [];
 let busy = false;
 let mcpServers = [];
@@ -38,6 +40,7 @@ const chatPermissions = new Map();
 const chatUsages = new Map();
 const chatPlans = new Map();
 const chatModels = new Map();
+const chatProviders = new Map();
 const mobileLayout = window.matchMedia("(max-width: 700px)");
 localStorage.removeItem("copilot-auto-model-responses");
 
@@ -231,6 +234,84 @@ settingsBtn.addEventListener("click", () => {
   showSettings(true);
 });
 
+const directlineForm = document.getElementById("directlineForm");
+const directlineSecret = document.getElementById("directlineSecret");
+const directlineStatus = document.getElementById("directlineStatus");
+const saveDirectlineSecret = document.getElementById("saveDirectlineSecret");
+const removeDirectlineSecret = document.getElementById("removeDirectlineSecret");
+
+async function loadDirectlineSettings() {
+  try {
+    const response = await fetch("/api/directline/settings", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.href = "/login.html";
+      return;
+    }
+    const data = await readApiResponse(response);
+    if (!response.ok) throw new Error(data.error || `Errore HTTP ${response.status}`);
+    directlineStatus.textContent = data.configured
+      ? "Secret Direct Line salvato sul server."
+      : "Nessun secret Direct Line configurato.";
+    removeDirectlineSecret.hidden = !data.configured;
+  } catch (error) {
+    directlineStatus.textContent = error.message;
+  }
+}
+
+directlineForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (window.location.protocol !== "https:") {
+    directlineStatus.textContent = "Apri la webchat in HTTPS (porta 7891) prima di inserire il secret.";
+    return;
+  }
+  saveDirectlineSecret.disabled = true;
+  directlineStatus.textContent = "Salvataggio...";
+  try {
+    const response = await fetch("/api/directline/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret: directlineSecret.value }),
+    });
+    if (response.status === 401) {
+      window.location.href = "/login.html";
+      return;
+    }
+    const data = await readApiResponse(response);
+    if (!response.ok) throw new Error(data.error || `Errore HTTP ${response.status}`);
+    directlineSecret.value = "";
+    await loadDirectlineSettings();
+  } catch (error) {
+    directlineStatus.textContent = error.message;
+  } finally {
+    saveDirectlineSecret.disabled = false;
+  }
+});
+
+removeDirectlineSecret.addEventListener("click", async () => {
+  if (!window.confirm("Rimuovere il secret Direct Line salvato sul server?")) return;
+  if (window.location.protocol !== "https:") {
+    directlineStatus.textContent = "Apri la webchat in HTTPS (porta 7891) per rimuovere il secret.";
+    return;
+  }
+  removeDirectlineSecret.disabled = true;
+  try {
+    const response = await fetch("/api/directline/settings", { method: "DELETE" });
+    if (response.status === 401) {
+      window.location.href = "/login.html";
+      return;
+    }
+    const data = await readApiResponse(response);
+    if (!response.ok) throw new Error(data.error || `Errore HTTP ${response.status}`);
+    await loadDirectlineSettings();
+  } catch (error) {
+    directlineStatus.textContent = error.message;
+  } finally {
+    removeDirectlineSecret.disabled = false;
+  }
+});
+
+loadDirectlineSettings();
+
 const restartServiceBtn = document.getElementById("restartServiceBtn");
 const restartServiceStatus = document.getElementById("restartServiceStatus");
 restartServiceBtn.addEventListener("click", async () => {
@@ -311,9 +392,94 @@ function prepareNewChatPermissions() {
   syncPermissions(selectedPermissions());
 }
 
+function setProviderControls(provider) {
+  const studio = provider === "studio";
+  document.getElementById("modelSettings").hidden = studio;
+  attachmentBtn.hidden = studio;
+  if (studio) {
+    attachedFiles = [];
+    attachmentPicker.hidden = true;
+    attachmentBtn.setAttribute("aria-expanded", "false");
+    renderAttachmentPreviews();
+  }
+}
+
+function setModeSelection(provider, mode = "ask") {
+  const value = provider === "studio" ? "studio" : mode;
+  permissionModeSelects.forEach((select) => { select.value = value; });
+}
+
+async function createNewChat(provider, mode) {
+  chatOpenRequest += 1;
+  storeVisibleJobState();
+  try {
+    const res = await fetch("/api/new-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    });
+    const data = await readApiResponse(res);
+    if (!res.ok) {
+      showNotice(data.error || "Impossibile creare una nuova chat");
+      const activeProvider = currentChatId ? chatProviders.get(currentChatId) || "cli" : "cli";
+      if (currentChatId) {
+        setModeSelection(activeProvider, lastPermissionMode);
+        setProviderControls(activeProvider);
+      }
+      return false;
+    }
+    if (!data.chat_id) {
+      showNotice("Il server non ha restituito l'ID della nuova chat");
+      return false;
+    }
+    pendingChatId = data.chat_id;
+    pendingChatProvider = provider;
+    currentChatProvider = provider;
+    chatProviders.set(data.chat_id, provider);
+    currentChatId = null;
+    sessionStorage.removeItem("copilot-current-chat");
+    setProviderControls(provider);
+    setModeSelection(provider, mode || lastPermissionMode);
+    setModelControls(localStorage.getItem("copilot-model") || "auto", false);
+    showSettings(false);
+    pendingPlan = false;
+    renderMcpServers();
+    renderChatUsage();
+    if (provider === "cli") prepareNewChatPermissions();
+    updateChatBusyState();
+    messagesEl.replaceChildren();
+    sidebar.classList.add("hidden");
+    await loadChatList();
+    syncChatFeatures();
+    showNotice("");
+    return true;
+  } catch (error) {
+    showNotice(error.message);
+    const activeProvider = currentChatId ? chatProviders.get(currentChatId) || "cli" : "cli";
+    if (currentChatId) {
+      setModeSelection(activeProvider, lastPermissionMode);
+      setProviderControls(activeProvider);
+    }
+    return false;
+  }
+}
+
 permissionModeSelects.forEach((select) => {
   select.addEventListener("change", async () => {
     const mode = select.value;
+    const provider = mode === "studio" ? "studio" : "cli";
+    const activeProvider = currentChatId
+      ? chatProviders.get(currentChatId) || "cli"
+      : pendingChatId ? pendingChatProvider : provider;
+    if (!currentChatId && !pendingChatId && provider === "studio") {
+      await createNewChat(provider, "ask");
+      return;
+    }
+    if (provider !== activeProvider) {
+      await createNewChat(provider, mode === "studio" ? "ask" : mode);
+      return;
+    }
+    if (provider === "studio") return;
     if (mode === "plan") {
       showNotice("");
       return;
@@ -1058,8 +1224,11 @@ async function loadChatList() {
   if (res.status === 401) { window.location.href = "/login.html"; return; }
   if (!res.ok) return;
   const chats = await res.json();
-  for (const chat of chats) chatModels.set(chat.id, chat.model);
-  if (currentChatId) {
+  for (const chat of chats) {
+    chatModels.set(chat.id, chat.model);
+    chatProviders.set(chat.id, chat.provider || "cli");
+  }
+  if (currentChatId && chatProviders.get(currentChatId) !== "studio") {
     setModelControls(chatModels.get(currentChatId) || modelSelect.value, true);
   }
   for (const chat of chats) chatUsages.set(chat.id, chat.usage);
@@ -1131,7 +1300,7 @@ async function renameChat(chatId, currentTitle) {
 }
 
 async function deleteChat(chatId) {
-  if (!window.confirm("Eliminare definitivamente questa sessione Copilot e tutta la sua cronologia?")) return;
+  if (!window.confirm("Eliminare definitivamente questa chat e tutta la sua cronologia?")) return;
   const res = await fetch(`/api/chats/${chatId}`, { method: "DELETE" });
   if (!res.ok) {
     const data = await readApiResponse(res);
@@ -1140,7 +1309,10 @@ async function deleteChat(chatId) {
   }
   if (currentChatId === chatId) {
     currentChatId = null;
+    currentChatProvider = null;
     setModelControls(localStorage.getItem("copilot-model") || "auto", false);
+    setProviderControls("cli");
+    setModeSelection("cli", "ask");
     pendingPlan = false;
     renderMcpServers();
     messagesEl.innerHTML = "";
@@ -1149,6 +1321,7 @@ async function deleteChat(chatId) {
   chatUsages.delete(chatId);
   chatPlans.delete(chatId);
   chatModels.delete(chatId);
+  chatProviders.delete(chatId);
   loadChatList();
 }
 
@@ -1161,15 +1334,23 @@ async function openChat(chatId, refresh = false) {
   if (request !== chatOpenRequest) return false;
   pendingChatId = null;
   currentChatId = chatId;
+  currentChatProvider = chatProviders.get(chatId) || "cli";
   sessionStorage.setItem("copilot-current-chat", chatId);
-  setModelControls(chatModels.get(chatId) || localStorage.getItem("copilot-model") || "auto", true);
+  setProviderControls(currentChatProvider);
+  if (currentChatProvider === "studio") {
+    setModeSelection("studio");
+  } else {
+    setModelControls(chatModels.get(chatId) || localStorage.getItem("copilot-model") || "auto", true);
+    syncPermissions(chatPermissions.get(chatId) || []);
+  }
   showSettings(false);
   pendingPlan = chatPlans.get(chatId) || false;
   renderMcpServers();
   updateChatBusyState();
   renderChatUsage();
-  syncPermissions(chatPermissions.get(chatId) || []);
+  storeVisibleJobState();
   renderChatMessages(msgs, pendingPlan);
+  renderActiveJobProgress(chatId);
   sidebar.classList.add("hidden");
   loadChatList();
   return true;
@@ -1255,20 +1436,101 @@ function attachPlanActions(element) {
 }
 
 function showActivity(container, event) {
-  const data = event.data || {};
+  showActivityName(container, toolActivityName(event));
+}
+
+function toolActivityName(event) {
+  const data = event?.data || {};
+  const name = data.toolName || data.tool_name || data.name || data.tool || data.command || "tool";
+  return String(name);
+}
+
+function showActivityName(container, name) {
   const activity = document.createElement("div");
   activity.className = "tool-activity";
-  const name = data.toolName || data.tool_name || data.name || data.tool || data.command || "tool";
-  activity.textContent = `Uso ${String(name)}`;
+  activity.textContent = `Uso ${name}`;
   container.append(activity);
   if (container.isConnected) messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function rememberJobProgressElement(job, pending, activity) {
+  job.progress ||= { content: "", tools: [] };
+  pending.dataset.jobPending = job.id;
+  activity.dataset.jobActivity = job.id;
+  if (pending.classList.contains("thinking")) {
+    job.thinkingIndex = Number(pending.dataset.thinkingIndex);
+    job.thinkingUpdatedAt = Number(pending.dataset.thinkingUpdatedAt);
+  }
+  rememberJob(job);
+}
+
+function restoreThinkingState(pending, job) {
+  if (Number.isInteger(job.thinkingIndex)
+    && job.thinkingIndex >= 0 && job.thinkingIndex < thinkingPhrases.length) {
+    pending.dataset.thinkingIndex = String(job.thinkingIndex);
+    pending.dataset.thinkingUpdatedAt = String(job.thinkingUpdatedAt || Date.now());
+    pending.querySelector(".thinking-label").textContent = thinkingPhrases[job.thinkingIndex];
+  } else {
+    setThinkingMessage(pending);
+    job.thinkingIndex = Number(pending.dataset.thinkingIndex);
+    job.thinkingUpdatedAt = Number(pending.dataset.thinkingUpdatedAt);
+  }
+}
+
+function findJobProgressElement(job, kind) {
+  const key = `job${kind[0].toUpperCase()}${kind.slice(1)}`;
+  return Array.from(messagesEl.children).find((element) => element.dataset[key] === job.id) || null;
+}
+
+function renderJobProgress(job) {
+  if (!job.chat_id || (currentChatId !== job.chat_id
+    && !(currentChatId === null && pendingChatId === job.chat_id))) return;
+  job.progress ||= { content: "", tools: [] };
+  let pending = findJobProgressElement(job, "pending");
+  let activity = findJobProgressElement(job, "activity");
+  if (!pending) {
+    pending = addMessage("Copilot sta pensando...", "bot pending");
+    pending.dataset.jobPending = job.id;
+    restoreThinkingState(pending, job);
+  }
+  if (!activity) {
+    activity = document.createElement("div");
+    activity.className = "activity-log";
+    activity.dataset.jobActivity = job.id;
+    messagesEl.append(activity);
+  }
+  if (job.progress.content) {
+    pending.classList.remove("thinking");
+    pending.removeAttribute("role");
+    pending.textContent = job.progress.content;
+  }
+  activity.replaceChildren();
+  for (const name of job.progress.tools) showActivityName(activity, name);
+}
+
+function renderActiveJobProgress(chatId) {
+  for (const job of activeJobs.values()) {
+    if (job.chat_id === chatId) renderJobProgress(job);
+  }
+}
+
+function storeVisibleJobState() {
+  for (const job of activeJobs.values()) {
+    const pending = findJobProgressElement(job, "pending");
+    if (pending?.classList.contains("thinking")) {
+      job.thinkingIndex = Number(pending.dataset.thinkingIndex);
+      job.thinkingUpdatedAt = Number(pending.dataset.thinkingUpdatedAt);
+      rememberJob(job);
+    }
+  }
 }
 
 async function streamChat(formData, pending, activity, job) {
   formData.append("async", "true");
   formData.append("request_id", job.id);
+  rememberJobProgressElement(job, pending, activity);
   await startJobRequest("/api/chat/stream", { method: "POST", body: formData }, job);
-  return waitForJob(job, pending, activity);
+  return waitForJob(job);
 }
 
 function newRequestId() {
@@ -1279,17 +1541,32 @@ function newRequestId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+function persistActiveJobs() {
+  const storedJobs = [...activeJobs.values()].map((activeJob) => {
+    const { progress, ...storedJob } = activeJob;
+    if (progress) storedJob.progress = { tools: progress.tools || [] };
+    return storedJob;
+  });
+  sessionStorage.setItem("copilot-pending-jobs", JSON.stringify(storedJobs));
+}
+
 function rememberJob(job) {
   activeJobs.set(job.id, job);
-  sessionStorage.setItem("copilot-pending-jobs", JSON.stringify([...activeJobs.values()]));
+  persistActiveJobs();
   sessionStorage.removeItem("copilot-pending-job");
   updateChatBusyState();
 }
 
 function clearJob(job) {
   activeJobs.delete(job.id);
-  sessionStorage.setItem("copilot-pending-jobs", JSON.stringify([...activeJobs.values()]));
+  removeJobProgress(job);
+  persistActiveJobs();
   updateChatBusyState();
+}
+
+function removeJobProgress(job) {
+  findJobProgressElement(job, "pending")?.remove();
+  findJobProgressElement(job, "activity")?.remove();
 }
 
 function isCurrentChatBusy() {
@@ -1371,7 +1648,7 @@ async function startJobRequest(url, options, job) {
   loadChatList();
 }
 
-async function waitForJob(job, pending, activity) {
+async function waitForJob(job) {
   let missing = 0;
   while (activeJobs.has(job.id)) {
     if (document.hidden || !navigator.onLine) {
@@ -1420,17 +1697,18 @@ async function waitForJob(job, pending, activity) {
       || (!currentChatId && pendingChatId === job.chat_id)) {
       showNotice("");
     }
-    if (pending && data.progress?.content) {
-      pending.classList.remove("thinking");
-      pending.removeAttribute("role");
-      pending.textContent = data.progress.content;
-    } else if (pending) {
+    job.progress = {
+      content: data.progress?.content || "",
+      tools: (data.progress?.tools || []).map(toolActivityName),
+    };
+    const pending = findJobProgressElement(job, "pending");
+    if (pending?.classList.contains("thinking") && !job.progress.content) {
       setThinkingMessage(pending, true);
+      job.thinkingIndex = Number(pending.dataset.thinkingIndex);
+      job.thinkingUpdatedAt = Number(pending.dataset.thinkingUpdatedAt);
     }
-    if (activity) {
-      activity.replaceChildren();
-      for (const event of data.progress?.tools || []) showActivity(activity, event);
-    }
+    rememberJob(job);
+    renderJobProgress(job);
     if (data.status === "running" && !job.sidebarUpdated
       && (data.progress?.content || data.progress?.tools?.length)) {
       job.sidebarUpdated = true;
@@ -1458,12 +1736,13 @@ async function approvePlanAsync() {
   const pending = addMessage("Copilot sta eseguendo il piano...", "bot pending");
   const activity = document.createElement("div");
   messagesEl.append(activity);
+  rememberJobProgressElement(job, pending, activity);
   try {
     await startJobRequest("/api/chat/plan/approve", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ async: true, request_id: job.id, chat_id: chatId }),
     }, job);
-    const data = await waitForJob(job, pending, activity);
+    const data = await waitForJob(job);
     chatPlans.set(chatId, false);
     if (currentChatId === chatId) pendingPlan = false;
     await loadChatList();
@@ -1473,8 +1752,7 @@ async function approvePlanAsync() {
   } catch (err) {
     showNotice(err.message);
   } finally {
-    pending.remove();
-    activity.remove();
+    removeJobProgress(job);
     updateChatBusyState();
   }
 }
@@ -1536,7 +1814,10 @@ async function submitChat(e) {
   renderMcpServers();
   updateChatBusyState();
   const requestedPlan = permissionModeSelects[0]?.value === "plan";
-  const isCommand = attachedFiles.length === 0
+  const activeProvider = currentChatId
+    ? chatProviders.get(currentChatId) || "cli"
+    : pendingChatProvider;
+  const isCommand = activeProvider !== "studio" && attachedFiles.length === 0
     && (/^\/(help|usage)\s*$/i.test(text) || /^\/cwd(?:\s+.+)?\s*$/i.test(text)
       || /^\/model\s+\S+\s*$/i.test(text)
       || /^\/chronicle(?:\s*)$/i.test(text) || /^\/chronicle\s+reindex(?:\s|$)/i.test(text)
@@ -1589,11 +1870,16 @@ async function submitChat(e) {
       chatUsages.set(responseChatId, data.usage);
       chatPermissions.set(responseChatId, submittedPermissions);
       chatPlans.set(responseChatId, !!data.pending_plan);
+      chatProviders.set(responseChatId, data.provider || activeProvider);
       if (chatSelected) {
         currentChatId = responseChatId;
+        currentChatProvider = data.provider || activeProvider;
         pendingChatId = null;
         sessionStorage.setItem("copilot-current-chat", responseChatId);
-        setModelControls(data.model || submittedModel, true);
+        setProviderControls(currentChatProvider);
+        if (currentChatProvider !== "studio") {
+          setModelControls(data.model || submittedModel, true);
+        }
         pendingPlan = !!data.pending_plan;
         renderMcpServers();
         renderChatUsage();
@@ -1632,8 +1918,12 @@ async function submitChat(e) {
     if (err.chat_id && err.usage) chatUsages.set(err.chat_id, err.usage);
     if (chatSelected && err.chat_id) {
       currentChatId = err.chat_id;
+      currentChatProvider = chatProviders.get(err.chat_id) || activeProvider;
       pendingChatId = null;
-      setModelControls(chatModels.get(err.chat_id) || submittedModel, true);
+      setProviderControls(currentChatProvider);
+      if (currentChatProvider !== "studio") {
+        setModelControls(chatModels.get(err.chat_id) || submittedModel, true);
+      }
       renderChatUsage();
     }
     loadChatList();
@@ -1679,30 +1969,8 @@ input.addEventListener("keydown", (e) => {
 
 newChatBtn.addEventListener("click", async () => {
   chatOpenRequest += 1;
-  const res = await fetch("/api/new-chat", { method: "POST" });
-  if (!res.ok) {
-    showNotice((await readApiResponse(res)).error || "Impossibile creare una nuova chat");
-    return;
-  }
-  const data = await readApiResponse(res);
-  if (!data.chat_id) {
-    showNotice("Il server non ha restituito l'ID della nuova chat");
-    return;
-  }
-  pendingChatId = data.chat_id;
-  currentChatId = null;
-  sessionStorage.removeItem("copilot-current-chat");
-  setModelControls(localStorage.getItem("copilot-model") || "auto", false);
-  showSettings(false);
-  pendingPlan = false;
-  renderMcpServers();
-  renderChatUsage();
-  prepareNewChatPermissions();
-  updateChatBusyState();
-  messagesEl.innerHTML = "";
-  sidebar.classList.add("hidden");
-  loadChatList();
-  syncChatFeatures();
+  const mode = permissionModeSelects[0]?.value || "ask";
+  await createNewChat(mode === "studio" ? "studio" : "cli", mode);
 });
 
 logoutBtn.addEventListener("click", async () => {
@@ -1723,7 +1991,7 @@ async function restoreChat() {
       : storedLegacyJob ? [JSON.parse(storedLegacyJob)] : [];
     if (!Array.isArray(restoredJobs)) throw new Error("Elenco delle richieste in corso non valido");
     for (const job of restoredJobs) activeJobs.set(job.id, job);
-    sessionStorage.setItem("copilot-pending-jobs", JSON.stringify(restoredJobs));
+    persistActiveJobs();
     sessionStorage.removeItem("copilot-pending-job");
     await loadChatList();
     const chatId = sessionStorage.getItem("copilot-current-chat")
@@ -1737,13 +2005,10 @@ async function restoreChat() {
 }
 
 async function restorePendingJob(job) {
-  const showProgress = currentChatId === job.chat_id
-    || (!currentChatId && pendingChatId === job.chat_id);
-  const pending = showProgress ? addMessage("Recupero della risposta...", "bot pending") : null;
-  const activity = showProgress ? document.createElement("div") : null;
-  if (activity) messagesEl.append(activity);
+  job.progress ||= { content: "", tools: [] };
+  renderJobProgress(job);
   try {
-    const data = await waitForJob(job, pending, activity);
+    const data = await waitForJob(job);
     await loadChatList();
     if (currentChatId === data.chat_id && settingsView.hidden) {
       await openChat(data.chat_id, true);
@@ -1753,8 +2018,7 @@ async function restorePendingJob(job) {
       showNotice(err.message);
     }
   } finally {
-    pending?.remove();
-    activity?.remove();
+    removeJobProgress(job);
     updateChatBusyState();
   }
 }

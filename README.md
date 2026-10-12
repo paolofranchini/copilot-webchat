@@ -42,8 +42,9 @@ da versionare, indipendentemente dal modello e dalla memoria automatica della CL
 Premi **Impostazioni** sotto «Nuova chat» per aprire la schermata dedicata
 nell'area principale; scegli una chat dalla sidebar o premi «Nuova chat» per
 tornare ai messaggi. La schermata contiene il riavvio del servizio, la gestione
-globale dei server MCP e l'elenco delle skill/plugin. Modello e modalità chat
-si scelgono nella sidebar e le impostazioni delle chat sono salvate nel database.
+globale dei server MCP, l'elenco delle skill/plugin e la configurazione opzionale
+del secret Direct Line. Modello e modalità chat si scelgono nella sidebar e le
+impostazioni delle chat sono salvate nel database.
 
 - **Streaming e continuità**: la chat usa il flusso di eventi JSONL della CLI e
   recupera periodicamente testo e attività dei tool. Se la CLI non emette delta
@@ -102,10 +103,19 @@ potenti: abilitali solo per configurazioni fidate.
 
 ## Requisiti
 
-- Python 3.10+ con Flask installato (`pip install flask`).
+- Python 3.10+ con le dipendenze installate (`pip install -r requirements.txt`).
 - OpenSSL installato per il listener HTTPS facoltativo.
 - [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli) installata e autenticata sulla stessa macchina.
 - (Consigliato) una rete privata come Tailscale per esporre il servizio solo ai propri dispositivi.
+
+Nelle **Impostazioni** è possibile salvare il secret Direct Line per una futura
+integrazione: il valore viene cifrato sul server e la chiave è custodita in un
+file distinto con permessi privati. Il salvataggio è consentito solo via HTTPS
+(porta 7891). Se configurato, il selettore **Modalità chat → Copilot Studio**
+crea una chat separata che usa Direct Line; il cambio modalità avvia una nuova
+chat e non converte cronologie esistenti. Sono supportati messaggi testuali,
+non allegati, Plan o comandi CLI. Non riutilizzare secret condivisi in chat o
+già esposti: rigenerali prima di salvarli.
 
 ## Struttura del progetto
 

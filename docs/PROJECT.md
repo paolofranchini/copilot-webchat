@@ -11,6 +11,8 @@ Fonti: [README](../README.md), [backend](../app.py) e [UI](../static/index.html)
 
 - Accedere con password, creare/riprendere sessioni native Copilot, rinominarle
   e consultarle sia da CLI sia da browser.
+- Usare Copilot Studio come provider di chat distinto tramite Direct Line, con
+  cronologia separata; provider e sessioni CLI non si convertono l'uno nell'altro.
 - Inviare messaggi e allegati, vedere attività/risposte, recuperare lavori
   asincroni senza reinviare il prompt dopo una disconnessione.
 - Scegliere modello e modalità Ask/Edit/Plan/Agent; approvare o annullare un piano.
@@ -36,6 +38,9 @@ I criteri di regressione osservabili e le relative evidenze sono in
 [TESTING](TESTING.md): una modifica deve superare i controlli pertinenti,
 non duplicare invii e non attribuire risultati alla chat sbagliata.
 L'integrazione non deve presentare prompt tradotti come comandi nativi.
+Copilot Studio supporta in questa implementazione messaggi testuali; allegati,
+modalità Plan, comandi CLI e utilizzo fuori dall'agente pubblicato non sono
+coperti.
 
 ## Scope e informazioni non stabilite
 

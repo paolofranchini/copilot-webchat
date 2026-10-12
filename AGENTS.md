@@ -51,7 +51,7 @@ preferenza al selettore dei modelli della webchat.
 
 ## Verifica e conclusione
 
-- Comandi esistenti: `pip install flask`, `python3 app.py` per l'avvio;
+- Comandi esistenti: `pip install -r requirements.txt`, `python3 app.py` per l'avvio;
   `python3 -m unittest discover -s tests` per Python;
   `node --check static/app.js` per sintassi frontend; `git diff --check`.
   Test Node aggiuntivi e precauzioni sull'import in [TESTING](docs/TESTING.md).

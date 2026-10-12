@@ -2,6 +2,99 @@
 
 Aggiornato: 2026-10-12. Stato mutabile, non trascrizione delle conversazioni.
 
+## Ultima modifica — Indicatori di attività tra chat
+
+Il polling dei job non dipende più dai nodi DOM creati al momento dell'invio:
+ogni job conserva in memoria i progressi testuali, i soli nomi dei tool e lo
+stato della frase di attesa. Quando si apre una chat attiva la UI ricrea il
+pending con i tre puntini e le righe «Uso …»; la creazione di una chat nuova
+conserva prima lo stato visibile. `sessionStorage` contiene solo la frase e i
+nomi dei tool, non testo parziale dell'assistente né argomenti.
+
+Aggiunto `tests/test_active_chat_progress.js` per il ripristino dopo il cambio
+chat. Verifiche effettive: tutti gli script Node documentati, `node --check
+static/app.js` e `git diff --check` superati. Nessun test backend richiesto.
+Modifiche non committate e non pushate.
+
+## Ultima modifica — Modalità chat Copilot Studio
+
+A richiesta dell'utente, i riquadri delle impostazioni sono disposti in una
+sola colonna per mantenere un layout più ordinato; i pulsanti nelle card ora si
+dimensionano sul contenuto, come il link di download della CA.
+
+Aggiunta la modalità **Copilot Studio** come provider distinto dalla CLI:
+cambiare provider apre una nuova chat; i messaggi, il nome e i riferimenti/token
+Direct Line sono salvati separatamente in SQLite, con token cifrati. Il backend
+genera/aggiorna token, invia messaggi di testo e interroga le attività fino alla
+risposta. Allegati, Plan e comandi CLI non sono supportati. Aggiornate migrazione
+SQLite, CRUD/chat list, invio asincrono, selettore UI, README e ARCHITECTURE.
+
+Il secret Direct Line è salvato via HTTPS, cifrato a riposo e mai restituito alla
+UI; la chiave è privata ma nello stesso profilo server. La credenziale incollata
+nella conversazione è da considerare compromessa: rigenerarla prima dell'uso.
+Suite Python completa: **74 test superati** in HOME temporanea. Sintassi JS e
+test Node documentati superati; `py_compile` e `git diff --check` superati.
+Direct Line è stato testato con API HTTP simulate, non contro il tenant reale.
+Aggiornati PROJECT, ARCHITECTURE, DECISIONS, TESTING e README.
+
+## Correzione 403 Direct Line
+
+La specifica Direct Line richiede che `user.id` inizi con `dl_`; il backend
+inviava `webchat-<UUID>`. Corretto il prefisso e aggiunta diagnostica dell'azione
+fallita (generazione/refresh token, invio o lettura) senza includere credenziali
+o ID conversazione; ora, se presente, viene mostrato anche `error.code`
+stabile di Direct Line (non il testo remoto). L'API richiede `user.id` con
+prefisso `dl_`, mentre il backend inviava `webchat-<UUID>`: corretto sia nel
+token sia nelle attività inviate. Questo è un difetto reale da correggere, ma
+non prova da solo che fosse la causa di quel 403. Microsoft indica anche token
+scaduto (`TokenExpired`), endpoint regionale errato e risorsa agente non valida
+come cause possibili. Senza la fase e il codice dell'ErrorResponse restituito
+nel tentativo effettivo, la causa specifica rimane incerta.
+
+Test mirati Direct Line: **5 superati**, incluso 403 con codice preservato senza
+credenziali. Suite Python completa dopo l'estensione diagnostica:
+**75 test superati**; `node --check static/app.js`, test UI modalità chat e
+`git diff --check` superati. Serve aggiornare e riavviare il backend prima di
+riprovare; vai in Impostazioni e seleziona Riavvia servizio.
+
+## Correzione errore Direct Line ResourceNotFound
+
+L'utente ha riportato HTTP 403, `ResourceNotFound` durante la generazione del
+token. Il backend usava l'endpoint globale `directline.botframework.com`,
+mentre il callback mostrato nell'impostazione utente è regionale Europa.
+Allineato l'endpoint alle API Direct Line europee (`europe.directline.botframework.com`)
+e aggiunto un test URL. L'associazione alla regione è un'indicazione forte ma
+non conclusiva; non si è effettuata alcuna richiesta reale né letto il secret.
+Test specifici: `test_copilot_studio.py` **5 superati**, incluso URL regionale;
+`py_compile app.py tests/test_copilot_studio.py` e `git diff --check` superati.
+Se il retry non risolve, verificare la regione effettiva dell'agente e acquisire
+il nuovo codice 403 senza condividere credenziali. Dopo aggiornamento del
+backend, vai in Impostazioni e seleziona Riavvia servizio.
+
+## Correzione Direct Line 404 conversazione
+
+L'utente ha riportato HTTP 404 `ResourceNotFound` durante la lettura delle
+attività. La sequenza precedente generava un token ma non chiamava l'operazione
+Direct Line `POST /conversations`, che apre la conversazione; la successiva GET
+su `/conversations/{id}/activities` poteva quindi riferirsi a una conversazione
+mai avviata. Aggiunto l'avvio esplicito col token generato, poi persistiti l'ID e
+il token restituiti dall'operazione. Per le chat già esistenti, se la prima
+lettura attività restituisce 404, prima dell'invio del prompt viene avviata una
+conversazione e viene ripetuta la sola lettura; il prompt non viene reinviato.
+Test mock aggiornati per verificare nuova sequenza e recupero legacy. Verifiche
+effettive: `python3 -m unittest discover -s tests` **76 test superati**;
+`python3 -m py_compile app.py tests/test_copilot_studio.py` e
+`git diff --check` superati. Nessuna chiamata reale eseguita.
+
+## Prova reale Direct Line
+
+Su richiesta dell'utente, eseguita una chiamata end-to-end al tenant configurato
+usando il secret già salvato, senza stamparlo né esporre token/ID: generazione
+token, avvio conversazione, invio di un prompt tecnico innocuo e polling. Il
+servizio ha risposto `OK`; connessione e ciclo messaggio-risposta sono quindi
+verificati sul tenant reale. Il secret era stato condiviso nella conversazione
+precedente: va comunque rigenerato e sostituito nelle Impostazioni.
+
 ## Ultima modifica — Sessioni webchat parallele e permessi nuova chat
 
 La webchat monitora job asincroni distinti in parallelo, salva l'elenco in

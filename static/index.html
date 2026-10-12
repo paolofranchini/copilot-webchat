@@ -18,7 +18,7 @@
       <button id="newChatBtn" class="new-chat-btn">＋ Nuova chat</button>
       <button id="settingsBtn" class="new-chat-btn" type="button" aria-controls="settingsView" aria-expanded="false">Impostazioni</button>
       <div id="chatList" class="chat-list"></div>
-      <label class="model-select">
+      <label class="model-select" id="modelSettings">
         <span data-model-label>Modello nuova chat</span>
         <select id="modelSelect" disabled aria-label="Modello nuova chat"></select>
       </label>
@@ -29,6 +29,7 @@
           <option value="edit">Edit</option>
           <option value="plan">Plan</option>
           <option value="agent">Agent</option>
+          <option value="studio">Copilot Studio</option>
         </select>
       </label>
       <button id="logoutBtn" class="logout-btn">Esci</button>
@@ -53,6 +54,19 @@
             <p>Scarica la CA per fidarti del certificato HTTPS su questo dispositivo.</p>
             <a class="settings-action" href="/api/tls/ca">Scarica certificato CA</a>
             <small>HTTPS: porta 7891 · HTTP: porta 7890 · Non disponibile offline.</small>
+          </section>
+          <section class="settings-card" aria-labelledby="directlineSettingsTitle">
+            <h3 id="directlineSettingsTitle">Secret Direct Line</h3>
+            <p>Inserisci un secret Direct Line rigenerato. Viene cifrato sul server e non viene mai mostrato di nuovo. La chiave di cifratura è conservata separatamente con permessi privati.</p>
+            <form id="directlineForm" class="sidebar-form">
+              <label for="directlineSecret">Secret Direct Line</label>
+              <input id="directlineSecret" name="secret" type="password" maxlength="4096"
+                     autocomplete="new-password" spellcheck="false" required>
+              <button id="saveDirectlineSecret" type="submit">Salva secret</button>
+            </form>
+            <p id="directlineStatus" role="status" aria-live="polite">Verifica configurazione...</p>
+            <button id="removeDirectlineSecret" type="button" hidden>Rimuovi secret</button>
+            <small>Il salvataggio richiede HTTPS (porta 7891). Copilot Studio usa testo semplice; allegati, modalità Plan e comandi CLI non sono disponibili.</small>
           </section>
           <section class="settings-card" aria-labelledby="restartSettingsTitle">
             <h3 id="restartSettingsTitle">Riavvio servizio</h3>

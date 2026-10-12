@@ -69,3 +69,27 @@ presente per supportare l'installabilità, non salva API, sessioni o conversazio
 e non offre uso offline. Manifest, icone e worker sono pubblici, mentre il resto
 della webchat mantiene l'autenticazione. Contesto e istruzioni d'installazione sono nel
 [README](../README.md); il flusso TLS è in [ARCHITECTURE](ARCHITECTURE.md).
+
+## D7 — Credenziale Direct Line cifrata sul server (nuova)
+
+La UI Impostazioni consente di salvare o rimuovere un secret Direct Line solo
+tramite HTTPS. Flask lo cifra con Fernet in `~/.copilot/webchat_directline/`;
+la chiave è separata dal ciphertext e tutti i file/directory sono privati.
+L'API espone solo lo stato configurato e non rilegge il valore nel browser.
+La chiave resta nello stesso profilo utente: la cifratura protegge il contenuto
+da letture isolate del file del secret, non da compromissione dell'account o
+dell'host. Decisione di implementazione: Copilot Studio è un provider chat
+separato, trasporta testo con token Direct Line generati/aggiornati dal backend
+e conserva la cronologia in tabella distinta dalle sessioni CLI. Non converte
+chat esistenti e non supporta allegati, Plan o comandi CLI. Mai riutilizzare
+credenziali che siano state incollate o esposte: revocarle e generarne una nuova
+prima del salvataggio. Gli ID utente Direct Line usano `dl_<UUID>`, come
+richiesto dall'API. La diagnostica indica l'operazione e, se presente, il codice
+stabile dell'ErrorResponse, mai secret/token o messaggi remoti. Un 403 può indicare
+TokenExpired, un endpoint regionale non corretto o una risorsa agente non valida;
+la causa concreta va confermata sulla risposta Direct Line del tenant. Verifica
+automatizzata con API Direct Line simulate; il collegamento reale resta da provare.
+Il backend usa l'endpoint regionale Europa, coerente con il redirect
+`europe.token.botframework.com` mostrato nelle impostazioni utente. Se la regione
+effettiva dell'agente è diversa, `DIRECTLINE_API` va allineato all'endpoint
+Direct Line documentato per quella regione.

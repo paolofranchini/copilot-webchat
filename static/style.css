@@ -57,7 +57,7 @@ html, body {
   max-width: 920px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 16px;
 }
@@ -72,7 +72,6 @@ html, body {
   min-width: 0;
 }
 .settings-card h3 { margin: 0; font-size: 17px; }
-.skills-settings-card { grid-column: 1 / -1; }
 .settings-card p, .settings-card small {
   color: var(--muted);
   font-size: 13px;
@@ -97,6 +96,7 @@ html, body {
   background: #303646;
   cursor: pointer;
 }
+.settings-view button { align-self: flex-start; }
 .settings-view button:disabled, .plan-actions button:disabled { opacity: .5; cursor: not-allowed; }
 .settings-action {
   display: inline-flex;
@@ -110,6 +110,7 @@ html, body {
 }
 .settings-action:hover { background: #3a4254; }
 .sidebar-form { display: flex; flex-direction: column; gap: 6px; }
+.sidebar-form label { font-size: 14px; font-weight: 600; }
 .mcp-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 0; border-bottom: 1px solid #3a3f4f; }
 .mcp-row label { flex-basis: 100%; overflow-wrap: anywhere; }
 .skill-group {

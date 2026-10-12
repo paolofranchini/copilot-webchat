@@ -20,12 +20,15 @@ import tempfile
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.request
 from contextlib import closing
 from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
+from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, Response, g, jsonify, request, send_file, session, stream_with_context
 from werkzeug.datastructures import FileStorage
 from werkzeug.security import check_password_hash
@@ -49,6 +52,10 @@ PASSWORD_HASH = AUTH_FILE.read_text().strip() if AUTH_FILE.exists() else None
 DB_PATH = CONFIG_DIR / "webchat.db"
 TLS_DIR = CONFIG_DIR / "webchat_tls"
 TLS_CA_CERT = TLS_DIR / "ca.crt"
+DIRECTLINE_DIR = CONFIG_DIR / "webchat_directline"
+DIRECTLINE_KEY_FILE = DIRECTLINE_DIR / "key"
+DIRECTLINE_SECRET_FILE = DIRECTLINE_DIR / "secret.enc"
+DIRECTLINE_API = "https://europe.directline.botframework.com/v3/directline"
 TLS_PORT = 7891
 COPILOT_BIN = "/home/linuxbrew/.linuxbrew/bin/copilot"
 TIMEOUT_SECONDS = 300
@@ -76,6 +83,7 @@ SERVER_NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,60}$")
 ENV_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 SERVICE_INSTANCE_ID = uuid.uuid4().hex
 SERVICE_RESTART_LOCK = threading.Lock()
+DIRECTLINE_KEY_LOCK = threading.Lock()
 service_restarting = False
 
 
@@ -355,7 +363,19 @@ def init_db():
                 title TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 permissions TEXT NOT NULL DEFAULT '[]',
-                model TEXT
+                model TEXT,
+                provider TEXT NOT NULL DEFAULT 'cli',
+                directline_conversation_id TEXT,
+                directline_token_enc TEXT
+            )"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS studio_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                ts TEXT NOT NULL
             )"""
         )
         db.execute(
@@ -381,7 +401,13 @@ def init_db():
             db.execute("ALTER TABLE chats ADD COLUMN mcp_servers TEXT NOT NULL DEFAULT '[]'")
         if "tool_permissions" not in chat_cols:
             db.execute("ALTER TABLE chats ADD COLUMN tool_permissions TEXT NOT NULL DEFAULT '[]'")
-        db.execute("UPDATE chats SET title = 'Sessione Copilot'")
+        if "provider" not in chat_cols:
+            db.execute("ALTER TABLE chats ADD COLUMN provider TEXT NOT NULL DEFAULT 'cli'")
+        if "directline_conversation_id" not in chat_cols:
+            db.execute("ALTER TABLE chats ADD COLUMN directline_conversation_id TEXT")
+        if "directline_token_enc" not in chat_cols:
+            db.execute("ALTER TABLE chats ADD COLUMN directline_token_enc TEXT")
+        db.execute("UPDATE chats SET title = 'Sessione Copilot' WHERE provider = 'cli'")
         db.execute(
             "UPDATE chats SET pending_plan = '1' WHERE pending_plan IS NOT NULL"
         )
@@ -1250,6 +1276,293 @@ def download_tls_ca():
     return response
 
 
+def directline_cipher():
+    DIRECTLINE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    DIRECTLINE_DIR.chmod(0o700)
+    with DIRECTLINE_KEY_LOCK:
+        try:
+            key = DIRECTLINE_KEY_FILE.read_bytes()
+        except FileNotFoundError:
+            key = Fernet.generate_key()
+            fd = os.open(
+                DIRECTLINE_KEY_FILE,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(fd, "wb") as key_file:
+                key_file.write(key)
+        DIRECTLINE_KEY_FILE.chmod(0o600)
+    return Fernet(key)
+
+
+def store_directline_secret(secret):
+    DIRECTLINE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    DIRECTLINE_DIR.chmod(0o700)
+    encrypted = directline_cipher().encrypt(secret.encode("utf-8"))
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=".secret-", dir=DIRECTLINE_DIR
+    )
+    try:
+        with os.fdopen(fd, "wb") as secret_file:
+            secret_file.write(encrypted)
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, DIRECTLINE_SECRET_FILE)
+    finally:
+        Path(temporary_path).unlink(missing_ok=True)
+
+
+class DirectLineError(RuntimeError):
+    def __init__(self, message, status_code=None, error_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+
+
+def read_directline_secret():
+    try:
+        encrypted = DIRECTLINE_SECRET_FILE.read_bytes()
+        return directline_cipher().decrypt(encrypted).decode("utf-8")
+    except FileNotFoundError as exc:
+        raise DirectLineError(
+            "configura un secret Direct Line nelle Impostazioni"
+        ) from exc
+    except (OSError, ValueError, InvalidToken) as exc:
+        app.logger.error("Configurazione secret Direct Line non leggibile")
+        raise DirectLineError(
+            "configurazione secret Direct Line non leggibile"
+        ) from exc
+
+
+def directline_request(path, method, token, body=None):
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    payload = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        f"{DIRECTLINE_API}/{path}", data=payload, headers=headers, method=method
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        action = (
+            "generazione token" if path == "tokens/generate" else
+            "aggiornamento token" if path == "tokens/refresh" else
+            "avvio conversazione" if path == "conversations" else
+            "invio messaggio" if method == "POST" else
+            "lettura attività"
+        )
+        error_code = None
+        try:
+            error_body = json.loads(exc.read(16384).decode("utf-8"))
+            error = error_body.get("error", {})
+            if not isinstance(error, dict):
+                error = error_body
+            candidate = error.get("code")
+            if isinstance(candidate, str) and re.fullmatch(
+                r"[A-Za-z0-9_.-]{1,80}", candidate
+            ):
+                error_code = candidate
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        detail = f", codice {error_code}" if error_code else ""
+        message = (
+            f"Direct Line: token rifiutato durante {action} (HTTP 401); "
+            "crea una nuova chat"
+            if exc.code == 401 else
+            f"Direct Line: accesso negato durante {action} "
+            f"(HTTP {exc.code}{detail})"
+        )
+        app.logger.warning(
+            "Direct Line ha rifiutato %s durante %s (HTTP %s, codice %s)",
+            method, action, exc.code, error_code or "non disponibile",
+        )
+        raise DirectLineError(
+            message, status_code=exc.code, error_code=error_code
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        app.logger.warning("Connessione Direct Line non riuscita")
+        raise DirectLineError("impossibile raggiungere Direct Line") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DirectLineError("risposta Direct Line non valida") from exc
+
+
+def directline_token(db, chat_id):
+    user_id = f"dl_{chat_id}"
+    row = db.execute(
+        "SELECT directline_conversation_id, directline_token_enc "
+        "FROM chats WHERE id = ? AND provider = 'studio'",
+        (chat_id,),
+    ).fetchone()
+    if row is None:
+        raise DirectLineError("chat Copilot Studio non trovata")
+    if row["directline_conversation_id"] and row["directline_token_enc"]:
+        try:
+            old_token = directline_cipher().decrypt(
+                row["directline_token_enc"].encode("ascii")
+            ).decode("utf-8")
+        except (ValueError, UnicodeDecodeError, InvalidToken) as exc:
+            raise DirectLineError(
+                "token della conversazione non leggibile; crea una nuova chat"
+            ) from exc
+        refreshed = directline_request("tokens/refresh", "POST", old_token)
+        token = refreshed.get("token")
+        if not isinstance(token, str) or not token:
+            raise DirectLineError("Direct Line non ha restituito un token valido")
+        conversation_id = row["directline_conversation_id"]
+    else:
+        secret = read_directline_secret()
+        generated = directline_request(
+            "tokens/generate",
+            "POST",
+            secret,
+            {"user": {"id": user_id}},
+        )
+        token = generated.get("token")
+        if not isinstance(token, str) or not token:
+            raise DirectLineError("Direct Line non ha restituito un token valido")
+        conversation_id, token = start_directline_conversation(
+            db, chat_id, token
+        )
+    encrypted_token = directline_cipher().encrypt(
+        token.encode("utf-8")
+    ).decode("ascii")
+    db.execute(
+        "UPDATE chats SET directline_conversation_id = ?, directline_token_enc = ? "
+        "WHERE id = ?",
+        (conversation_id, encrypted_token, chat_id),
+    )
+    db.commit()
+    return conversation_id, token, user_id
+
+
+def start_directline_conversation(db, chat_id, token):
+    started = directline_request("conversations", "POST", token)
+    conversation_id = started.get("conversationId")
+    token = started.get("token", token)
+    if not isinstance(conversation_id, str) or not conversation_id:
+        raise DirectLineError(
+            "Direct Line non ha restituito un ID conversazione valido"
+        )
+    encrypted_token = directline_cipher().encrypt(
+        token.encode("utf-8")
+    ).decode("ascii")
+    db.execute(
+        "UPDATE chats SET directline_conversation_id = ?, directline_token_enc = ? "
+        "WHERE id = ?",
+        (conversation_id, encrypted_token, chat_id),
+    )
+    db.commit()
+    return conversation_id, token
+
+
+def run_directline_stream(chat_id, prompt):
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO studio_messages (chat_id, role, content, ts) "
+        "VALUES (?, 'user', ?, ?)",
+        (chat_id, prompt, now),
+    )
+    db.execute(
+        "UPDATE chats SET title = CASE WHEN title = 'Chat Copilot Studio' "
+        "THEN ? ELSE title END WHERE id = ?",
+        (prompt[:60] or "Chat Copilot Studio", chat_id),
+    )
+    db.commit()
+    try:
+        conversation_id, token, user_id = directline_token(db, chat_id)
+        try:
+            activities = directline_request(
+                f"conversations/{conversation_id}/activities", "GET", token
+            )
+        except DirectLineError as exc:
+            if exc.status_code != 404:
+                raise
+            # I token creati prima dell'avvio esplicito possono avere un ID
+            # conversazione che il servizio non ha ancora aperto.
+            conversation_id, token = start_directline_conversation(
+                db, chat_id, token
+            )
+            activities = directline_request(
+                f"conversations/{conversation_id}/activities", "GET", token
+            )
+        watermark = activities.get("watermark")
+        directline_request(
+            f"conversations/{conversation_id}/activities",
+            "POST",
+            token,
+            {"type": "message", "from": {"id": user_id}, "text": prompt},
+        )
+        deadline = time.monotonic() + TIMEOUT_SECONDS
+        replies = []
+        while time.monotonic() < deadline:
+            query = f"conversations/{conversation_id}/activities"
+            if watermark is not None:
+                query += "?" + urlencode({"watermark": watermark})
+            activities = directline_request(query, "GET", token)
+            watermark = activities.get("watermark", watermark)
+            for activity in activities.get("activities", []):
+                if (
+                    isinstance(activity, dict)
+                    and activity.get("type") == "message"
+                    and (activity.get("from") or {}).get("id") != user_id
+                    and isinstance(activity.get("text"), str)
+                    and activity["text"].strip()
+                ):
+                    replies.append(activity["text"].strip())
+            if replies:
+                reply = "\n\n".join(replies)
+                ts = datetime.now(timezone.utc).isoformat()
+                db.execute(
+                    "INSERT INTO studio_messages (chat_id, role, content, ts) "
+                    "VALUES (?, 'bot', ?, ?)",
+                    (chat_id, reply, ts),
+                )
+                db.commit()
+                yield sse({
+                    "type": "done", "reply": reply, "model": "Copilot Studio",
+                    "usage": None, "chat_id": chat_id, "ts": ts,
+                    "pending_plan": False,
+                })
+                return
+            yield ": attesa\n\n"
+            time.sleep(1)
+        raise DirectLineError("timeout: nessuna risposta ricevuta da Copilot Studio")
+    except DirectLineError as exc:
+        yield sse({"type": "error", "error": str(exc), "chat_id": chat_id})
+
+
+@app.route("/api/directline/settings", methods=["GET", "POST", "DELETE"])
+def directline_settings():
+    if request.method == "GET":
+        response = jsonify({"configured": DIRECTLINE_SECRET_FILE.is_file()})
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+    if not request.is_secure:
+        return jsonify({"error": "salva il secret tramite HTTPS (porta 7891)"}), 400
+
+    if request.method == "DELETE":
+        DIRECTLINE_SECRET_FILE.unlink(missing_ok=True)
+        response = jsonify({"ok": True, "configured": False})
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+    data = request.get_json(silent=True)
+    secret = data.get("secret") if isinstance(data, dict) else None
+    if not isinstance(secret, str) or not secret.strip() or len(secret) > 4096:
+        return jsonify({"error": "secret Direct Line mancante o non valido"}), 400
+    try:
+        store_directline_secret(secret.strip())
+    except (OSError, ValueError) as exc:
+        app.logger.error("Impossibile salvare il secret Direct Line: %s", exc)
+        return jsonify({"error": "impossibile salvare il secret Direct Line"}), 500
+    response = jsonify({"ok": True, "configured": True})
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
 @app.route("/api/service/restart", methods=["POST"])
 def restart_service():
     global service_restarting
@@ -1331,17 +1644,60 @@ def list_chats():
                 or session_is_running(SESSION_STATE_DIR / native_chat["id"]),
             "mcp_servers": json.loads(row["mcp_servers"]),
             "tool_permissions": json.loads(row["tool_permissions"]),
+            "provider": "cli",
+        })
+    studio_chats = db.execute(
+        """SELECT c.id, c.title, c.created_at,
+                  MAX(m.ts) AS last_message_at
+           FROM chats c LEFT JOIN studio_messages m ON m.chat_id = c.id
+           WHERE c.provider = 'studio'
+           GROUP BY c.id
+           ORDER BY COALESCE(MAX(m.ts), c.created_at) DESC"""
+    ).fetchall()
+    for studio_chat in studio_chats:
+        row = db.execute(
+            "SELECT permissions FROM chats WHERE id = ?", (studio_chat["id"],)
+        ).fetchone()
+        chats.append({
+            "id": studio_chat["id"],
+            "title": studio_chat["title"],
+            "created_at": studio_chat["created_at"],
+            "last_message_at": studio_chat["last_message_at"] or studio_chat["created_at"],
+            "permissions": json.loads(row["permissions"]),
+            "model": "Copilot Studio",
+            "provider": "studio",
+            "usage": None,
+            "pending_plan": False,
+            "running": studio_chat["id"] in running_chat_ids,
+            "mcp_servers": [],
+            "tool_permissions": [],
         })
     db.commit()
+    chats.sort(key=lambda chat: chat["last_message_at"], reverse=True)
     return jsonify(chats)
 
 
 @app.route("/api/chats/<chat_id>", methods=["GET"])
 def get_chat(chat_id):
+    db = get_db()
+    row = db.execute(
+        "SELECT provider FROM chats WHERE id = ?", (chat_id,)
+    ).fetchone()
+    if row and row["provider"] == "studio":
+        messages = db.execute(
+            "SELECT role, content, ts FROM studio_messages "
+            "WHERE chat_id = ? ORDER BY id",
+            (chat_id,),
+        ).fetchall()
+        session["copilot_session_id"] = chat_id
+        return jsonify([
+            {"role": message["role"], "content": message["content"],
+             "ts": message["ts"], "model": "Copilot Studio" if message["role"] == "bot" else None}
+            for message in messages
+        ])
     native_chat = read_native_chat(chat_id)
     if native_chat is None:
         return jsonify({"error": "chat non trovata"}), 404
-    db = get_db()
     ensure_chat_import(db, native_chat)
     chat_row = db.execute(
         "SELECT pending_plan FROM chats WHERE id = ?", (chat_id,)
@@ -1377,6 +1733,11 @@ def update_chat_permissions(chat_id):
     if permissions is None:
         return jsonify({"error": "autorizzazioni non valide"}), 400
     db = get_db()
+    chat = db.execute(
+        "SELECT provider FROM chats WHERE id = ?", (chat_id,)
+    ).fetchone()
+    if chat and chat["provider"] == "studio":
+        return jsonify({"error": "le autorizzazioni CLI non si applicano a Copilot Studio"}), 409
     result = db.execute(
         "UPDATE chats SET permissions = ? WHERE id = ?",
         (json.dumps(permissions), chat_id),
@@ -1395,6 +1756,14 @@ def update_chat_title(chat_id):
         return jsonify({"error": "titolo chat vuoto"}), 400
     if len(title) > 120:
         return jsonify({"error": "titolo chat troppo lungo (massimo 120 caratteri)"}), 400
+    db = get_db()
+    chat_row = db.execute(
+        "SELECT provider FROM chats WHERE id = ?", (chat_id,)
+    ).fetchone()
+    if chat_row and chat_row["provider"] == "studio":
+        db.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
+        db.commit()
+        return jsonify({"ok": True, "title": title})
     native_chat = read_native_chat(chat_id, include_messages=False)
     if native_chat is None:
         return jsonify({"error": "chat non trovata"}), 404
@@ -1403,7 +1772,6 @@ def update_chat_title(chat_id):
     except (OSError, UnicodeDecodeError) as exc:
         app.logger.error("Impossibile aggiornare il nome della sessione: %s", exc)
         return jsonify({"error": "impossibile aggiornare il nome della sessione"}), 500
-    db = get_db()
     ensure_chat_import(db, native_chat)
     db.commit()
     return jsonify({"ok": True, "title": title})
@@ -1413,10 +1781,21 @@ def update_chat_title(chat_id):
 def delete_chat(chat_id):
     if running_chat_job(chat_id):
         return jsonify({"error": "sessione Copilot in uso"}), 409
+    db = get_db()
+    row = db.execute(
+        "SELECT provider FROM chats WHERE id = ?", (chat_id,)
+    ).fetchone()
+    if row and row["provider"] == "studio":
+        db.execute("DELETE FROM studio_messages WHERE chat_id = ?", (chat_id,))
+        db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+        db.execute("DELETE FROM chat_jobs WHERE chat_id = ?", (chat_id,))
+        db.commit()
+        if session.get("copilot_session_id") == chat_id:
+            session.pop("copilot_session_id", None)
+        return jsonify({"ok": True})
     native_chat = read_native_chat(chat_id, include_messages=False)
     if native_chat is None:
         return jsonify({"error": "chat non trovata"}), 404
-    db = get_db()
     session_path = SESSION_STATE_DIR / chat_id
     try:
         if session_path.resolve().parent != SESSION_STATE_DIR.resolve():
@@ -1790,11 +2169,28 @@ def chat_stream():
     session["copilot_session_id"] = chat_id
     is_new = not (SESSION_STATE_DIR / chat_id).is_dir()
     row = db.execute("SELECT model, pending_plan, tool_permissions, mcp_servers, "
-                     "working_directory FROM chats WHERE id = ?",
+                     "working_directory, provider FROM chats WHERE id = ?",
                      (chat_id,)).fetchone()
+    provider = row["provider"] if row else "cli"
     model = row["model"] or model if row else model
     working_directory = (row["working_directory"] if row else
                          str(Path.cwd()) if is_new else None)
+    if provider == "studio":
+        if uploaded:
+            for path in attachments:
+                path.unlink(missing_ok=True)
+            return jsonify({"error": "gli allegati non sono supportati in Copilot Studio"}), 400
+        if plan:
+            return jsonify({"error": "la modalità Plan non è disponibile in Copilot Studio"}), 400
+        if not DIRECTLINE_SECRET_FILE.is_file():
+            return jsonify({"error": "configura un secret Direct Line nelle Impostazioni"}), 409
+
+        def studio_events():
+            yield sse({"type": "chat_created", "chat_id": chat_id,
+                       "title": message[:60]})
+            yield from run_directline_stream(chat_id, message)
+
+        return start_chat_job(data, chat_id, studio_events)
     if row and row["pending_plan"]:
         for path in attachments:
             path.unlink(missing_ok=True)
@@ -2033,8 +2429,22 @@ def command():
 @app.route("/api/new-chat", methods=["POST"])
 def new_chat():
     chat_id = str(uuid.uuid4())
+    data = request.get_json(silent=True) or {}
+    provider = data.get("provider", "cli") if isinstance(data, dict) else "cli"
+    if provider not in {"cli", "studio"}:
+        return jsonify({"error": "modalità chat non valida"}), 400
+    if provider == "studio":
+        if not DIRECTLINE_SECRET_FILE.is_file():
+            return jsonify({"error": "configura un secret Direct Line nelle Impostazioni"}), 409
+        db = get_db()
+        db.execute(
+            "INSERT INTO chats (id, title, created_at, provider) "
+            "VALUES (?, 'Chat Copilot Studio', ?, 'studio')",
+            (chat_id, datetime.now(timezone.utc).isoformat()),
+        )
+        db.commit()
     session["copilot_session_id"] = chat_id
-    return jsonify({"ok": True, "chat_id": chat_id})
+    return jsonify({"ok": True, "chat_id": chat_id, "provider": provider})
 
 
 if __name__ == "__main__":

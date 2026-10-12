@@ -44,6 +44,14 @@ legacy e rimuove `messages`. Non è un import privo di effetti su disco.
   contengono testo. `chats.working_directory` conserva la directory di lavoro
   impostata con `/cwd`; il marker Auto è associato a chat/timestamp e persiste
   tra browser.
+- `webchat_directline/`: configurazione opzionale del secret Direct Line.
+  `secret.enc` contiene il valore cifrato con Fernet e `key` la chiave separata;
+  directory e file hanno permessi privati. La API non restituisce il secret e
+  ne consente il salvataggio/rimozione solo via HTTPS. Il backend genera token,
+  avvia esplicitamente una conversazione e aggiorna i token Direct Line usando
+  l'endpoint Europa coerente con il tenant osservato; la tabella
+  `studio_messages` conserva messaggi di chat Studio, distinti dalle sessioni
+  CLI native.
 - Upload, statistiche del runner e configurazioni MCP temporanee vengono puliti
   a fine esecuzione; immagini delle risposte restano in `files/` della sessione.
 
@@ -59,7 +67,10 @@ legacy e rimuove `messages`. Non è un import privo di effetti su disco.
    selezionata se è occupata. La lista espone lo stato in esecuzione dai job webchat
    e dai lock nativi CLI, evidenziandolo nella sidebar. A job concluso la UI rilegge
    `GET /api/chats/<id>` per rendere tutti gli eventi di messaggio nativi, inclusi
-   eventuali messaggi intermedi dell'assistente.
+   eventuali messaggi intermedi dell'assistente. I progressi visibili del job
+   selezionato (frase di attesa/testo parziale e nomi dei tool) vengono ricostruiti
+   quando si riapre la chat. La scheda conserva solo la frase e i nomi dei tool,
+   senza testo parziale dell'assistente né argomenti dei tool.
 3. `chat_args()` prepara `--session-id`/`--resume`, la directory selezionata con
    `-C` e i permessi; `run_copilot_stream()` legge JSONL CLI, delta/tool e risposta
    finale. La route offre anche SSE diretto senza `async=true`: chiuderlo termina
@@ -100,6 +111,12 @@ La password è verificata con hash Werkzeug e i cookie sono firmati con chiave
 persistente. Il servizio è previsto per un singolo utente fidato su rete privata,
 non per esposizione pubblica. Shell/MCP possono agire con i permessi dell'utente
 server; variabili MCP sono conservate nel DB, non in un vault.
+Il secret Direct Line è cifrato a riposo, ma la chiave di cifratura si trova
+nello stesso profilo server: i permessi dei file proteggono da letture non
+autorizzate a livello di sistema, non da un account server compromesso.
+Copilot Studio è un provider separato selezionabile nella modalità chat; invio e
+polling Direct Line avvengono dal backend, con token di conversazione cifrati.
+Sono supportati messaggi di testo, non allegati, piani o comandi CLI.
 Immagini locali autenticate sono limitate a `files/`, con controllo dei percorsi
 e dei formati; URL esterni sono caricati dal browser. Eliminare una chat rimuove
 la sessione nativa: non provarlo su dati reali. Riavvio/delezione controllano job
