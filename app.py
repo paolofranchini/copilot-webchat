@@ -5,6 +5,8 @@ Espone un'interfaccia web che invoca `copilot -p` in modalità non interattiva,
 mantenendo la continuità della conversazione tramite --session-id / --resume.
 Pensato per essere raggiunto solo via Tailscale (rete privata).
 """
+import base64
+import hashlib
 import ipaddress
 import json
 import math
@@ -29,6 +31,8 @@ from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from flask import Flask, Response, g, jsonify, request, send_file, session, stream_with_context
 from werkzeug.datastructures import FileStorage
 from werkzeug.security import check_password_hash
@@ -55,6 +59,10 @@ TLS_CA_CERT = TLS_DIR / "ca.crt"
 DIRECTLINE_DIR = CONFIG_DIR / "webchat_directline"
 DIRECTLINE_KEY_FILE = DIRECTLINE_DIR / "key"
 DIRECTLINE_SECRET_FILE = DIRECTLINE_DIR / "secret.enc"
+FCM_TOKEN_DIR = CONFIG_DIR / "webchat_fcm"
+FCM_TOKEN_KEY_FILE = FCM_TOKEN_DIR / "key"
+FCM_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+FCM_MESSAGING_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 DIRECTLINE_API = "https://europe.directline.botframework.com/v3/directline"
 TLS_PORT = 7891
 COPILOT_BIN = "/home/linuxbrew/.linuxbrew/bin/copilot"
@@ -84,6 +92,9 @@ ENV_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 SERVICE_INSTANCE_ID = uuid.uuid4().hex
 SERVICE_RESTART_LOCK = threading.Lock()
 DIRECTLINE_KEY_LOCK = threading.Lock()
+FCM_TOKEN_KEY_LOCK = threading.Lock()
+FCM_ACCESS_TOKEN_LOCK = threading.Lock()
+FCM_ACCESS_TOKEN_CACHE = None
 service_restarting = False
 
 
@@ -444,6 +455,13 @@ def init_db():
                 chat_id TEXT NOT NULL,
                 message_ts TEXT NOT NULL,
                 PRIMARY KEY (chat_id, message_ts)
+            )"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS android_push_tokens (
+                token_hash TEXT PRIMARY KEY,
+                token_enc TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )"""
         )
 
@@ -964,6 +982,12 @@ def create_chat_job(data, chat_id, events, attachments, args):
                 (outcome["type"], json.dumps(outcome), job_id),
             )
             worker_db.commit()
+            try:
+                send_android_push_notifications(chat_id, outcome)
+            except Exception:
+                app.logger.exception(
+                    "Errore imprevisto durante l'invio della notifica Android"
+                )
 
     worker = threading.Thread(target=work, name=f"copilot-{job_id}", daemon=True)
     try:
@@ -1191,7 +1215,48 @@ def selected_mcp_servers(db, chat_id):
 
 
 def validate_mcp_config(config):
-    if not isinstance(config, dict) or set(config) - {"command", "args", "env"}:
+    if not isinstance(config, dict):
+        return None
+    if config.get("type") == "http":
+        if set(config) - {"type", "url", "headers", "tools"}:
+            return None
+        url = config.get("url")
+        headers = config.get("headers", {})
+        tools = config.get("tools", ["*"])
+        if (not isinstance(url, str) or len(url) > 2048
+                or any(ord(char) < 32 or char.isspace() for char in url)):
+            return None
+        try:
+            parsed_url = urlparse(url)
+            hostname = parsed_url.hostname
+            is_loopback = hostname == "localhost"
+            if hostname:
+                try:
+                    is_loopback = is_loopback or ipaddress.ip_address(hostname).is_loopback
+                except ValueError:
+                    pass
+            valid_scheme = (
+                parsed_url.scheme == "https"
+                or parsed_url.scheme == "http" and is_loopback
+            )
+            parsed_url.port
+        except ValueError:
+            return None
+        if (not valid_scheme or not hostname or parsed_url.username is not None
+                or parsed_url.password is not None or parsed_url.fragment):
+            return None
+        if (not isinstance(headers, dict) or len(headers) > 30
+                or any(not isinstance(key, str)
+                       or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}", key)
+                       or not isinstance(value, str) or len(value) > 2048
+                       or any(char in value for char in "\r\n\x00")
+                       for key, value in headers.items())
+                or not isinstance(tools, list) or len(tools) > 100
+                or any(not isinstance(tool, str) or not tool or len(tool) > 256
+                       or any(ord(char) < 32 for char in tool) for tool in tools)):
+            return None
+        return {"type": "http", "url": url, "headers": headers, "tools": tools}
+    if config.get("type") is not None or set(config) - {"command", "args", "env"}:
         return None
     command = config.get("command")
     args = config.get("args", [])
@@ -1293,6 +1358,313 @@ def directline_cipher():
                 key_file.write(key)
         DIRECTLINE_KEY_FILE.chmod(0o600)
     return Fernet(key)
+
+
+class FCMConfigurationError(RuntimeError):
+    pass
+
+
+class FCMDeliveryError(RuntimeError):
+    def __init__(self, status_code, error_status):
+        super().__init__(f"FCM HTTP {status_code}: {error_status}")
+        self.status_code = status_code
+        self.error_status = error_status
+
+
+class FCMUnregisteredToken(FCMDeliveryError):
+    pass
+
+
+def fcm_token_cipher():
+    FCM_TOKEN_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    FCM_TOKEN_DIR.chmod(0o700)
+    with FCM_TOKEN_KEY_LOCK:
+        try:
+            key = FCM_TOKEN_KEY_FILE.read_bytes()
+        except FileNotFoundError:
+            key = Fernet.generate_key()
+            fd = os.open(
+                FCM_TOKEN_KEY_FILE,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(fd, "wb") as key_file:
+                key_file.write(key)
+        FCM_TOKEN_KEY_FILE.chmod(0o600)
+    return Fernet(key)
+
+
+def load_fcm_service_account():
+    configured_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not configured_path:
+        raise FCMConfigurationError("GOOGLE_APPLICATION_CREDENTIALS non configurata")
+    path = Path(configured_path).expanduser()
+    try:
+        metadata = path.stat()
+        if not path.is_file():
+            raise FCMConfigurationError("credenziale FCM non valida")
+        if os.name == "posix" and metadata.st_mode & 0o077:
+            raise FCMConfigurationError(
+                "permessi credenziale FCM troppo ampi: impostare chmod 600"
+            )
+        credentials = json.loads(path.read_text(encoding="utf-8"))
+    except FCMConfigurationError:
+        raise
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FCMConfigurationError("impossibile leggere la credenziale FCM") from exc
+
+    if not isinstance(credentials, dict):
+        raise FCMConfigurationError("credenziale service account FCM non valida")
+    project_id = credentials.get("project_id")
+    client_email = credentials.get("client_email")
+    private_key = credentials.get("private_key")
+    token_uri = credentials.get("token_uri")
+    if (
+        credentials.get("type") != "service_account"
+        or not isinstance(project_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,127}", project_id)
+        or not isinstance(client_email, str)
+        or not re.fullmatch(r"[A-Za-z0-9._+-]{1,128}@[A-Za-z0-9.-]{1,190}", client_email)
+        or not isinstance(private_key, str)
+        or token_uri != FCM_OAUTH_TOKEN_URL
+    ):
+        raise FCMConfigurationError("credenziale service account FCM non valida")
+    try:
+        key = serialization.load_pem_private_key(
+            private_key.encode("utf-8"), password=None
+        )
+    except (TypeError, ValueError) as exc:
+        raise FCMConfigurationError("chiave privata FCM non valida") from exc
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise FCMConfigurationError("la chiave privata FCM deve essere RSA")
+    return path, metadata.st_mtime_ns, project_id, client_email, key
+
+
+def fcm_base64url(value):
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def fcm_access_token(credentials):
+    global FCM_ACCESS_TOKEN_CACHE
+    path, modified, project_id, client_email, private_key = credentials
+    cache_key = (str(path), modified)
+    with FCM_ACCESS_TOKEN_LOCK:
+        if FCM_ACCESS_TOKEN_CACHE:
+            cached_key, token, expires_at, cached_project = FCM_ACCESS_TOKEN_CACHE
+            if cached_key == cache_key and time.monotonic() < expires_at:
+                return token, cached_project
+
+        issued_at = int(time.time())
+        header = fcm_base64url(json.dumps(
+            {"alg": "RS256", "typ": "JWT"}, separators=(",", ":")
+        ).encode("utf-8"))
+        claims = fcm_base64url(json.dumps({
+            "iss": client_email,
+            "scope": FCM_MESSAGING_SCOPE,
+            "aud": FCM_OAUTH_TOKEN_URL,
+            "iat": issued_at,
+            "exp": issued_at + 3600,
+        }, separators=(",", ":")).encode("utf-8"))
+        signing_input = f"{header}.{claims}".encode("ascii")
+        signature = private_key.sign(
+            signing_input, padding.PKCS1v15(), hashes.SHA256()
+        )
+        assertion = f"{signing_input.decode('ascii')}.{fcm_base64url(signature)}"
+        body = urlencode({
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        }).encode("ascii")
+        request_object = urllib.request.Request(
+            FCM_OAUTH_TOKEN_URL,
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request_object, timeout=15) as response:
+                token_result = json.loads(response.read())
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise FCMConfigurationError("autenticazione OAuth FCM non riuscita") from exc
+        if not isinstance(token_result, dict):
+            raise FCMConfigurationError("risposta OAuth FCM non valida")
+        access_token = token_result.get("access_token")
+        expires_in = token_result.get("expires_in", 3600)
+        if (
+            not isinstance(access_token, str)
+            or not access_token
+            or isinstance(expires_in, bool)
+            or not isinstance(expires_in, (int, float))
+            or (
+                isinstance(expires_in, float)
+                and not math.isfinite(expires_in)
+            )
+            or expires_in <= 0
+        ):
+            raise FCMConfigurationError("risposta OAuth FCM non valida")
+        expires_in = min(expires_in, 3600)
+        FCM_ACCESS_TOKEN_CACHE = (
+            cache_key, access_token, time.monotonic() + max(1, expires_in - 60),
+            project_id,
+        )
+        return access_token, project_id
+
+
+def send_fcm_message(access_token, project_id, token, chat_id):
+    endpoint = (
+        "https://fcm.googleapis.com/v1/projects/"
+        f"{project_id}/messages:send"
+    )
+    payload = {
+        "message": {
+            "token": token,
+            "notification": {
+                "title": "Copilot",
+                "body": "Una risposta è pronta.",
+            },
+            "data": {"chat_id": str(chat_id), "type": "response"},
+            "android": {"priority": "high"},
+        }
+    }
+    request_object = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json; charset=UTF-8",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request_object, timeout=15) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            error_body = json.loads(exc.read())
+        except (OSError, json.JSONDecodeError):
+            error_body = {}
+        error = error_body.get("error") if isinstance(error_body, dict) else None
+        error_status = error.get("status") if isinstance(error, dict) else None
+        details = error.get("details", []) if isinstance(error, dict) else []
+        unregistered = error_status == "UNREGISTERED" or (
+            isinstance(details, list)
+            and any(
+                isinstance(detail, dict)
+                and detail.get("errorCode") == "UNREGISTERED"
+                for detail in details
+            )
+        )
+        if unregistered:
+            raise FCMUnregisteredToken(exc.code, error_status) from exc
+        raise FCMDeliveryError(exc.code, error_status or "errore FCM") from exc
+    except (OSError, urllib.error.URLError) as exc:
+        raise FCMDeliveryError(0, "errore di rete") from exc
+
+
+def send_android_push_notifications(chat_id, outcome):
+    if outcome.get("type") != "done":
+        return
+    db = get_db()
+    rows = db.execute(
+        "SELECT token_hash, token_enc FROM android_push_tokens"
+    ).fetchall()
+    if not rows:
+        return
+    try:
+        credentials = load_fcm_service_account()
+        access_token, project_id = fcm_access_token(credentials)
+    except FCMConfigurationError:
+        app.logger.exception("Notifiche Android non inviate: configurazione FCM")
+        return
+
+    cipher = fcm_token_cipher()
+    for row in rows:
+        try:
+            token = cipher.decrypt(row["token_enc"].encode("ascii")).decode("utf-8")
+        except (InvalidToken, UnicodeError, ValueError):
+            app.logger.exception("Token FCM cifrato non leggibile")
+            continue
+        try:
+            send_fcm_message(access_token, project_id, token, chat_id)
+        except FCMUnregisteredToken:
+            db.execute(
+                "DELETE FROM android_push_tokens WHERE token_hash = ?",
+                (row["token_hash"],),
+            )
+            db.commit()
+        except FCMDeliveryError as exc:
+            app.logger.warning(
+                "Invio FCM fallito (HTTP %s, stato %s)",
+                exc.status_code, exc.error_status,
+            )
+
+
+def validate_fcm_device_token(value):
+    if not isinstance(value, str):
+        return None
+    token = value.strip()
+    if (
+        not token
+        or len(token) > 4096
+        or any(ord(character) < 0x20 or ord(character) == 0x7f for character in token)
+    ):
+        return None
+    return token
+
+
+@app.route("/api/push/android/status")
+def android_push_status():
+    try:
+        load_fcm_service_account()
+        configured = True
+    except FCMConfigurationError:
+        configured = False
+    response = jsonify({"configured": configured})
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.route("/api/push/android/register", methods=["POST"])
+def register_android_push_token():
+    if not request.is_secure:
+        return jsonify({"error": "registra il token FCM tramite HTTPS"}), 400
+    data = request.get_json(silent=True)
+    token = validate_fcm_device_token(data.get("token") if isinstance(data, dict) else None)
+    if token is None:
+        return jsonify({"error": "token FCM non valido"}), 400
+    try:
+        load_fcm_service_account()
+    except FCMConfigurationError:
+        return jsonify({"error": "FCM non configurato sul server"}), 503
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    encrypted = fcm_token_cipher().encrypt(token.encode("utf-8")).decode("ascii")
+    db = get_db()
+    db.execute(
+        "INSERT INTO android_push_tokens (token_hash, token_enc, created_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET "
+        "token_enc = excluded.token_enc, created_at = excluded.created_at",
+        (token_hash, encrypted, datetime.now(timezone.utc).isoformat()),
+    )
+    db.commit()
+    response = jsonify({"registered": True})
+    response.headers["Cache-Control"] = "private, no-store"
+    return response, 200
+
+
+@app.route("/api/push/android/unregister", methods=["POST"])
+def unregister_android_push_token():
+    if not request.is_secure:
+        return jsonify({"error": "rimuovi il token FCM tramite HTTPS"}), 400
+    data = request.get_json(silent=True)
+    token = validate_fcm_device_token(data.get("token") if isinstance(data, dict) else None)
+    if token is None:
+        return jsonify({"error": "token FCM non valido"}), 400
+    db = get_db()
+    db.execute(
+        "DELETE FROM android_push_tokens WHERE token_hash = ?",
+        (hashlib.sha256(token.encode("utf-8")).hexdigest(),),
+    )
+    db.commit()
+    return jsonify({"registered": False})
 
 
 def store_directline_secret(secret):

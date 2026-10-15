@@ -6,11 +6,10 @@ In pratica: un chatbot personale con la potenza di Copilot CLI, accessibile da b
 
 ## Documentazione e memoria del progetto
 
-Per contribuire con GitHub Copilot partire da [AGENTS.md](AGENTS.md) e dal
-[contesto di ripresa](docs/SESSION.md). La documentazione separa
-[scopo e requisiti](docs/PROJECT.md), [architettura](docs/ARCHITECTURE.md),
-[decisioni](docs/DECISIONS.md), [stato e lavori aperti](docs/ROADMAP.md) e
-[verifiche](docs/TESTING.md).
+Per contribuire con GitHub Copilot partire da [AGENTS.md](AGENTS.md).
+Questo README descrive scopo, utilizzo e configurazione;
+[ARCHITECTURE](docs/ARCHITECTURE.md) raccoglie flussi e decisioni tecniche,
+[TESTING](docs/TESTING.md) i comandi e le precauzioni di verifica.
 
 Copilot CLI supporta `AGENTS.md` e `.github/copilot-instructions.md` come
 istruzioni di repository; i documenti collegati vanno letti esplicitamente.
@@ -18,9 +17,26 @@ In una nuova sessione interattiva usare `/instructions` per verificare quali
 file sono caricati e abilitati. La memoria durevole resta nei file Markdown
 da versionare, indipendentemente dal modello e dalla memoria automatica della CLI.
 
+## Scopo e limiti
+
+Il progetto è personale e per rete privata, non un servizio pubblico multiutente
+né una replica completa della CLI interattiva. Copilot Studio è un provider
+separato per l'agente pubblicato: non converte le sessioni CLI e supporta solo
+testo, senza allegati, Plan o comandi CLI.
+Fleet è esclusa e il backend ne rifiuta il parametro; integrazione GitHub nativa
+e agenti di revisione integrati nella UI non fanno parte dello scope stabilito.
+Questo non limita gli strumenti Copilot usati per sviluppare il repository.
+
+Non sono stabiliti SLA, politica di backup/conservazione, matrice di browser
+o versioni CLI garantite. L'assenza di una funzionalità non ne autorizza
+l'implementazione. Le modifiche devono preservare accesso privato, continuità
+delle sessioni e risultati associati alla chat d'origine, senza duplicare invii.
+
 ## Caratteristiche
 
 - **Interfaccia chat** semplice, scura, responsive (sidebar collassabile su mobile).
+- **Notifiche PWA**: dopo averle attivate da Impostazioni e con il permesso del browser, una risposta completata mostra una notifica se la pagina è in background o si sta visualizzando un'altra chat; toccarla apre la chat interessata. Impostazioni include una notifica di prova. La pagina deve restare aperta: senza un servizio Web Push la PWA chiusa non può ricevere notifiche.
+- **Backend push Android**: il backend può inviare via FCM una notifica generica al completamento dei lavori asincroni, senza inserire prompt o risposte nel payload. Il client Android nativo non è incluso: può registrare/revocare il token FCM tramite API autenticate HTTPS.
 - **Indicatore di attesa animato** con puntini durante l'elaborazione e testo nel colore originale; rispetta la preferenza del browser per ridurre il movimento e lascia spazio alla risposta appena arriva.
 - **Login con sola password** (nessun nome utente), hash salvato con `scrypt`.
 - **Cronologia conversazioni** letta dai file nativi delle sessioni Copilot; le stesse sessioni sono accessibili sia dalla CLI sia dalla webchat.
@@ -32,7 +48,7 @@ da versionare, indipendentemente dal modello e dalla memoria automatica della CL
 - **Modello per chat**: l'elenco del selettore viene caricato dalla CLI a ogni apertura della webapp, senza una lista di modelli mantenuta nel frontend. Su una chat aperta la scelta equivale a `/model <modello>` e vale per i turni successivi; per una chat nuova viene usata come modello iniziale.
 - **Crediti per sessione**: il totale AIU viene letto dal database nativo di Copilot CLI e mostrato nell'area di composizione della chat.
 - **Metadati delle risposte**: modello, crediti e ora sono allineati su una sola riga. Il suffisso `(Auto)` distingue le risposte generate con selezione automatica del modello; la provenienza è salvata in `webchat.db` e resta associata alla risposta anche su altri browser. I crediti sono il costo del turno (tutte le chiamate registrate tra un messaggio utente e il successivo, incluse attività dei tool e sottoagenti) e compaiono solo sull'ultima risposta del turno, anche nella cronologia. I messaggi utente mostrano solo l'ora; se la CLI non ha registrato dati di consumo o timestamp utilizzabili, il costo non viene mostrato.
-- **Modalità chat**: Ask non espone strumenti, Edit abilita comandi e modifica file, Agent concede tutti i permessi mantenendo la modalità interattiva della CLI. La scelta è associata alla chat; creando una nuova chat resta selezionata la modalità corrente e viene applicata al primo messaggio.
+- **Provider e modalità chat**: Provider separa GitHub Copilot (predefinito) da Copilot Studio; cambiarlo crea una nuova chat con il provider scelto. Modalità chat controlla i permessi GitHub Copilot: Ask non espone strumenti, Edit abilita comandi e modifica file, Agent concede tutti i permessi mantenendo la modalità interattiva della CLI. Plan è disponibile solo per chat GitHub Copilot. La modalità è associata alla chat e viene applicata al primo messaggio di una nuova chat.
 - **File allegati**: il pulsante `+` apre un'area per selezionare o trascinare file (fino a 5 file da 10 MB ciascuno per messaggio). Puoi anche incollare un'immagine dagli appunti nel campo del messaggio. Immagini e documenti nativi vengono passati a Copilot come allegati; i file testuali comuni vengono inseriti direttamente nel prompt.
 - **Immagini nelle risposte**: Copilot può usare `![descrizione](https://...)` per mostrare immagini esterne oppure salvare immagini PNG, JPEG, GIF, WebP o AVIF nella cartella `files/` della sessione e mostrarle tramite `/api/chats/<id>/images/<nome-file>`. Un clic apre l'immagine a dimensione intera; gli errori di caricamento sono indicati nel messaggio. Il supporto funziona anche nella cronologia e nelle risposte asincrone; non aggiunge un generatore di immagini né modifica i permessi della chat.
 - **Leggero**: Flask + SQLite, nessuna build/frontend framework, adatto a girare su un Raspberry Pi.
@@ -55,16 +71,21 @@ impostazioni delle chat sono salvate nel database.
   L'utente può approvarlo o annullarlo; l'approvazione riprende la stessa sessione
   CLI con i permessi della chat. Finché il piano è in attesa, non è possibile inviare
   altri messaggi.
-- **Server MCP locali**: è possibile registrare un comando con percorso assoluto,
-  argomenti e variabili d'ambiente e abilitarlo globalmente. Il backend conserva
-  API di selezione per chat, ma la UI attuale non espone tale selezione e invia
-  liste MCP e permessi granulari vuote nei nuovi messaggi. Un server selezionato
-  tramite API viene passato alla CLI, nei turni con permessi compatibili,
-  con `--additional-mcp-config` tramite un file temporaneo
-  privato, cancellato alla fine. La configurazione (incluse le variabili) resta in
-  `~/.copilot/webchat.db`: non inserire segreti se altri utenti possono leggere il DB.
+- **Server MCP**: la webchat gestisce server locali `stdio` e remoti HTTP
+  Streamable. Per Microsoft Learn, ad esempio, usa
+  `{"type":"http","url":"https://learn.microsoft.com/api/mcp","tools":["*"]}`.
+  I server abilitati vengono inclusi nei nuovi turni CLI con permessi compatibili;
+  Ask e Plan non li usano. Il backend passa la configurazione alla CLI con
+  `--additional-mcp-config` tramite un file temporaneo privato, cancellato a fine
+  esecuzione. Nel messaggio si può scrivere `#nome-server` per selezionare
+  esplicitamente uno o più server abilitati per quel turno; senza riferimenti si
+  usano tutti i server abilitati. I riferimenti sono disponibili in modalità
+  Edit e Agent, non in Ask, Plan o Copilot Studio. Gli endpoint remoti richiedono
+  HTTPS; HTTP è consentito solo per server loopback. La configurazione (incluse
+  variabili e header) resta in `~/.copilot/webchat.db`: non inserire segreti se
+  altri utenti possono leggere il DB.
   I server già configurati direttamente nella CLI restano soggetti alle sue impostazioni
-  globali; la selezione per chat riguarda solo i server creati nella webchat.
+  globali; gli interruttori della webchat valgono solo per i server creati qui.
 - **Skill e plugin**: l'elenco usa `copilot skill list --json` e
   `copilot plugin list --json`; le checkbox attivano o disattivano gli elementi
   con i comandi CLI corrispondenti. La modifica è globale e vale per le sessioni
@@ -111,18 +132,54 @@ potenti: abilitali solo per configurazioni fidate.
 Nelle **Impostazioni** è possibile salvare il secret Direct Line per una futura
 integrazione: il valore viene cifrato sul server e la chiave è custodita in un
 file distinto con permessi privati. Il salvataggio è consentito solo via HTTPS
-(porta 7891). Se configurato, il selettore **Modalità chat → Copilot Studio**
-crea una chat separata che usa Direct Line; il cambio modalità avvia una nuova
+(porta 7891). Se configurato, il selettore **Provider → Copilot Studio**
+crea una chat separata che usa Direct Line; il cambio provider avvia una nuova
 chat e non converte cronologie esistenti. Sono supportati messaggi testuali,
 non allegati, Plan o comandi CLI. Non riutilizzare secret condivisi in chat o
 già esposti: rigenerali prima di salvarli.
+
+### Notifiche push per un client Android
+
+Il backend invia una notifica FCM quando termina con successo un lavoro
+asincrono (GitHub Copilot o Copilot Studio). Il server deve poter raggiungere
+in uscita Google OAuth e FCM; non è necessario esporre la webchat su Internet.
+Per abilitarlo:
+
+1. Crea un progetto Firebase, abilita Firebase Cloud Messaging e configura
+   l'app Android associata. Il client Android usa il proprio `google-services.json`;
+   non contiene né sostituisce la credenziale server.
+2. Crea una credenziale service account server autorizzata a inviare messaggi
+   FCM (abilita la Firebase Cloud Messaging API e assegna al service account il
+   ruolo **Firebase Cloud Messaging API Admin**). Salva il JSON fuori dal
+   repository, leggibile solo dall'utente del servizio (ad esempio in
+   `~/.copilot/fcm-service-account.json`, con permessi `600`), e imposta
+   `GOOGLE_APPLICATION_CREDENTIALS` nel servizio systemd:
+
+   ```ini
+   Environment=GOOGLE_APPLICATION_CREDENTIALS=/home/<utente>/.copilot/fcm-service-account.json
+   ```
+
+3. Riavvia il servizio. Il client, dopo il login e il consenso alle notifiche,
+   può controllare `GET /api/push/android/status`, poi inviare
+   `POST /api/push/android/register` con `{"token":"<token FCM>"}`. Per revocarlo
+   usa `POST /api/push/android/unregister` con lo stesso JSON. Tutte le API
+   richiedono la sessione autenticata; registrazione e revoca richiedono HTTPS
+   (porta 7891).
+
+Il backend conserva i token cifrati con una chiave di cifratura privata in
+`~/.copilot/webchat_fcm/`; il token non viene restituito dalle API. Il payload
+inviato a FCM contiene solo un testo generico e `chat_id`/tipo per aprire la
+chat nel client, non il prompt o la risposta. I token dichiarati non più
+registrati da FCM vengono rimossi; altri errori sono scritti nei log e non
+annullano la risposta completata. Se si perde la chiave di cifratura, il client
+deve registrare nuovamente il token.
 
 ## Struttura del progetto
 
 ```
 copilot-webchat/
 ├── AGENTS.md           # istruzioni operative canoniche per Copilot
-├── docs/               # conoscenza durevole e contesto di ripresa
+├── docs/               # conoscenza durevole del progetto
 ├── tests/              # regressioni Python e Node
 ├── app.py              # backend Flask: API, metadati SQLite, cronologia nativa
 └── static/
@@ -140,6 +197,7 @@ Dati d'esecuzione (non versionati, salvati fuori dal repo in `~/.copilot/`):
 - `webchat_auth` — hash della password di accesso.
 - `webchat_secret` — chiave segreta per firmare i cookie di sessione Flask.
 - `webchat.db` — impostazioni specifiche della webchat associate agli ID di sessione (modello, autorizzazioni e server MCP), provenienza Auto delle risposte, stato, progressi e risultati testuali dei lavori asincroni. Non è l'archivio della cronologia: cronologia principale e crediti restano nei dati nativi Copilot. I risultati dei lavori vengono rimossi quando elimini la chat.
+- `webchat_fcm/key` — chiave privata locale che cifra i token dei dispositivi Android salvati nel database.
 - `session-state/` — sessioni native Copilot, inclusi eventi e cronologia delle conversazioni. Le immagini locali mostrate nelle risposte restano nella sottocartella `files/` della sessione e vengono eliminate insieme alla chat.
 
 ## Configurazione iniziale

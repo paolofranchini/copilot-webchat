@@ -9,14 +9,14 @@ preferenza al selettore dei modelli della webchat.
 
 ## Prima di implementare
 
-- Leggere questo file, [SESSION](docs/SESSION.md) e [PROJECT](docs/PROJECT.md).
-  Consultare solo gli altri documenti pertinenti: [ARCHITECTURE](docs/ARCHITECTURE.md),
-  [DECISIONS](docs/DECISIONS.md), [ROADMAP](docs/ROADMAP.md), [TESTING](docs/TESTING.md).
+- Leggere questo file; consultare [README](README.md) per scopo e utilizzo,
+  [ARCHITECTURE](docs/ARCHITECTURE.md) per flussi e vincoli tecnici,
+  [TESTING](docs/TESTING.md) per verifiche, solo quando pertinenti al task.
 - Eseguire `git status --short`; leggere codice, test, configurazione e diff
   rilevanti. Preservare modifiche preesistenti, anche nei file da aggiornare.
 - Verificare le ipotesi nel repository: codice, configurazione, Git e risultati
   reali dei test prevalgono sulle descrizioni e sulle conversazioni precedenti.
-  Le proposte in ROADMAP non sono lavori automaticamente autorizzati.
+  Funzionalità mancanti e proposte non sono lavori automaticamente autorizzati.
 
 ## Vincoli e convenzioni
 
@@ -42,8 +42,8 @@ preferenza al selettore dei modelli della webchat.
 
 ## Durante il lavoro
 
-- Registrare decisioni durevoli in DECISIONS; aggiornare ARCHITECTURE se cambia
-  l'architettura reale e PROJECT/ROADMAP se cambiano requisiti, scope o piani.
+- Aggiornare ARCHITECTURE quando cambiano flussi, vincoli o decisioni tecniche
+  durevoli; README per scopo, utilizzo e configurazione; TESTING per le verifiche.
 - Separare fatti, assunzioni e proposte. Registrare lezioni riutilizzabili da
   tentativi falliti nel documento pertinente, non trascrivere conversazioni.
 - Mantenere una sola fonte per ogni dettaglio; usare collegamenti negli altri
@@ -60,9 +60,8 @@ preferenza al selettore dei modelli della webchat.
   Riportare comandi effettivamente eseguiti e risultati reali, includendo errori,
   blocchi e verifiche automatiche non superate. Non dichiarare successi non
   verificati.
-- Aggiornare SESSION al termine di ogni attività significativa con lavoro
-  completato, file, verifiche, problemi e prossima azione concreta. Aggiornare gli
-  altri documenti solo quando giustificato; non lasciare uno stato obsoleto.
+- Aggiornare la documentazione solo quando cambia conoscenza durevole del
+  progetto; non mantenere un diario delle attività o un file di handoff.
 - Rivedere il diff completo (inclusi file nuovi) per contraddizioni, duplicazioni
   e modifiche estranee; ricontrollare lo stato Git. Non fare commit o push senza
   richiesta esplicita.

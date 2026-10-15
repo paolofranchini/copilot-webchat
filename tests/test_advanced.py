@@ -136,6 +136,12 @@ class ChatFeatureTests(unittest.TestCase):
             "name": "test", "config": {"command": "sh -c echo fail"}
         })
         self.assertEqual(invalid.status_code, 400)
+        invalid_http = self.client.post("/api/mcp-servers", json={
+            "name": "invalid-http", "config": {
+                "type": "http", "url": "http://example.com/api/mcp"
+            }
+        })
+        self.assertEqual(invalid_http.status_code, 400)
         created = self.client.post("/api/mcp-servers", json={
             "name": "test", "config": {
                 "command": "/bin/cat", "args": [], "env": {}
@@ -168,12 +174,40 @@ class ChatFeatureTests(unittest.TestCase):
         self.assertEqual(json.loads(self.config_path.read_text())["mcpServers"]["test"]["command"],
                          "/bin/cat")
         self.assertFalse(list(self.backend.CONFIG_DIR.glob("webchat-mcp-*.json")))
+        http_config = {
+            "type": "http",
+            "url": "https://learn.microsoft.com/api/mcp",
+            "headers": {"X-Test": "value"},
+            "tools": ["*"],
+        }
+        http_server = self.client.post("/api/mcp-servers", json={
+            "name": "microsoft-docs", "config": http_config
+        })
+        self.assertEqual(http_server.status_code, 201)
+        http_server_id = http_server.json["id"]
+        http_result = self.events(self.client.post("/api/chat/stream", data={
+            "message": "cerca nei docs", "permissions": '["shell"]',
+            "mcp_servers": json.dumps([http_server_id]),
+        }))[-1]
+        self.assertEqual(http_result["type"], "done")
+        args = json.loads(self.args_path.read_text())
+        self.assertIn("--additional-mcp-config", args)
+        self.assertEqual(
+            json.loads(self.config_path.read_text())["mcpServers"]["microsoft-docs"],
+            http_config,
+        )
+        self.assertFalse(list(self.backend.CONFIG_DIR.glob("webchat-mcp-*.json")))
         self.assertEqual(self.client.put(f"/api/mcp-servers/{server_id}", json={
             "enabled": False
         }).status_code, 200)
-        self.assertEqual(self.client.get("/api/mcp-servers").json[0]["enabled"], False)
+        servers = {server["id"]: server
+                   for server in self.client.get("/api/mcp-servers").json}
+        self.assertFalse(servers[server_id]["enabled"])
         self.assertEqual(self.client.delete(
             f"/api/mcp-servers/{server_id}", json={}
+        ).status_code, 200)
+        self.assertEqual(self.client.delete(
+            f"/api/mcp-servers/{http_server_id}", json={}
         ).status_code, 200)
         self.assertEqual(self.client.get("/api/mcp-servers").json, [])
 

@@ -447,6 +447,12 @@ header h1 {
   color: inherit;
 }
 
+.msg a.markdown-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .message-image img {
   display: block;
   max-width: 100%;

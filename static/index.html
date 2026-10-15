@@ -18,6 +18,13 @@
       <button id="newChatBtn" class="new-chat-btn">＋ Nuova chat</button>
       <button id="settingsBtn" class="new-chat-btn" type="button" aria-controls="settingsView" aria-expanded="false">Impostazioni</button>
       <div id="chatList" class="chat-list"></div>
+      <label class="model-select">
+        Provider
+        <select id="providerSelect" aria-label="Provider">
+          <option value="cli" selected>Github Copilot</option>
+          <option value="studio">Copilot Studio</option>
+        </select>
+      </label>
       <label class="model-select" id="modelSettings">
         <span data-model-label>Modello nuova chat</span>
         <select id="modelSelect" disabled aria-label="Modello nuova chat"></select>
@@ -29,7 +36,6 @@
           <option value="edit">Edit</option>
           <option value="plan">Plan</option>
           <option value="agent">Agent</option>
-          <option value="studio">Copilot Studio</option>
         </select>
       </label>
       <button id="logoutBtn" class="logout-btn">Esci</button>
@@ -49,6 +55,43 @@
             <h3 id="sessionsSettingsTitle">Sessioni</h3>
             <p>La sidebar mostra le sessioni native Copilot. Eliminarne una rimuove definitivamente cronologia e file.</p>
           </section>
+          <section class="settings-card" aria-labelledby="notificationsSettingsTitle">
+            <h3 id="notificationsSettingsTitle">Notifiche risposte</h3>
+            <p>Ricevi una notifica quando una risposta arriva mentre la webchat è in background o stai leggendo un'altra chat. Non invia il testo della conversazione. La pagina deve restare aperta; non funziona con la PWA completamente chiusa.</p>
+            <button id="notificationToggle" type="button">Attiva notifiche</button>
+            <button id="notificationTest" type="button" disabled>Invia notifica di prova</button>
+            <p id="notificationStatus" role="status" aria-live="polite"></p>
+          </section>
+          <section class="settings-card" aria-labelledby="restartSettingsTitle">
+            <h3 id="restartSettingsTitle">Riavvio servizio</h3>
+            <p>Applica gli aggiornamenti del backend. Richiede systemd e nessuna sessione Copilot in esecuzione.</p>
+            <button id="restartServiceBtn" type="button">Riavvia servizio</button>
+            <p id="restartServiceStatus" role="status" aria-live="polite" hidden></p>
+          </section>
+          <section class="settings-card" aria-labelledby="mcpSettingsTitle">
+            <h3 id="mcpSettingsTitle">Server MCP disponibili</h3>
+            <p>Gestisci i server MCP configurati nella webchat.</p>
+            <div id="mcpConfigList"></div>
+            <form id="mcpForm" class="sidebar-form">
+              <input id="mcpName" placeholder="Nome server" aria-label="Nome server" required>
+              <textarea id="mcpConfig" rows="4" placeholder='{"type":"http","url":"https://learn.microsoft.com/api/mcp","tools":["*"]}' aria-label="Configurazione JSON MCP" required></textarea>
+              <small>Supporta stdio locale (`command`, `args`, `env`) e HTTP Streamable (`type: "http"`, `url`, `headers`, `tools`). I server abilitati vengono usati nelle chat con permessi MCP.</small>
+              <button type="submit">Aggiungi server</button>
+            </form>
+          </section>
+          <section class="settings-card skills-settings-card" aria-labelledby="skillsSettingsTitle">
+            <h3 id="skillsSettingsTitle">Skill e plugin disponibili</h3>
+            <p>Le selezioni valgono per le sessioni future di Copilot, anche fuori dalla webchat.</p>
+            <div id="skillsList">Caricamento...</div>
+            <form id="skillAddForm" class="skill-add-form">
+              <label for="skillSource">Aggiungi una skill</label>
+              <input id="skillSource" name="source" type="text" maxlength="2048"
+                     placeholder="https://…/SKILL.md oppure /percorso/server/skill"
+                     autocomplete="off" required>
+              <small>URL HTTPS a SKILL.md o percorso assoluto sul server. Aggiunge al profilo personale: usa solo fonti fidate.</small>
+              <button id="skillAddButton" type="submit">Aggiungi skill</button>
+            </form>
+          </section>
           <section class="settings-card" aria-labelledby="httpsSettingsTitle">
             <h3 id="httpsSettingsTitle">HTTPS e installazione</h3>
             <p>Scarica la CA per fidarti del certificato HTTPS su questo dispositivo.</p>
@@ -67,35 +110,6 @@
             <p id="directlineStatus" role="status" aria-live="polite">Verifica configurazione...</p>
             <button id="removeDirectlineSecret" type="button" hidden>Rimuovi secret</button>
             <small>Il salvataggio richiede HTTPS (porta 7891). Copilot Studio usa testo semplice; allegati, modalità Plan e comandi CLI non sono disponibili.</small>
-          </section>
-          <section class="settings-card" aria-labelledby="restartSettingsTitle">
-            <h3 id="restartSettingsTitle">Riavvio servizio</h3>
-            <p>Applica gli aggiornamenti del backend. Richiede systemd e nessuna sessione Copilot in esecuzione.</p>
-            <button id="restartServiceBtn" type="button">Riavvia servizio</button>
-            <p id="restartServiceStatus" role="status" aria-live="polite" hidden></p>
-          </section>
-          <section class="settings-card" aria-labelledby="mcpSettingsTitle">
-            <h3 id="mcpSettingsTitle">Server MCP disponibili</h3>
-            <p>Gestisci i server MCP configurati nella webchat.</p>
-            <div id="mcpConfigList"></div>
-            <form id="mcpForm" class="sidebar-form">
-              <input id="mcpName" placeholder="Nome server" aria-label="Nome server" required>
-              <textarea id="mcpConfig" rows="4" placeholder='{"command":"/percorso/assoluto","args":[],"env":{}}' aria-label="Configurazione JSON MCP" required></textarea>
-              <button type="submit">Aggiungi server</button>
-            </form>
-          </section>
-          <section class="settings-card skills-settings-card" aria-labelledby="skillsSettingsTitle">
-            <h3 id="skillsSettingsTitle">Skill e plugin disponibili</h3>
-            <p>Le selezioni valgono per le sessioni future di Copilot, anche fuori dalla webchat.</p>
-            <div id="skillsList">Caricamento...</div>
-            <form id="skillAddForm" class="skill-add-form">
-              <label for="skillSource">Aggiungi una skill</label>
-              <input id="skillSource" name="source" type="text" maxlength="2048"
-                     placeholder="https://…/SKILL.md oppure /percorso/server/skill"
-                     autocomplete="off" required>
-              <small>URL HTTPS a SKILL.md o percorso assoluto sul server. Aggiunge al profilo personale: usa solo fonti fidate.</small>
-              <button id="skillAddButton" type="submit">Aggiungi skill</button>
-            </form>
           </section>
         </div>
       </section>

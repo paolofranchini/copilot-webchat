@@ -35,8 +35,26 @@ assert.ok(!render("```\n![X](https://e.test/x.png)\n```").includes("<img "));
 assert.equal(render("`**letterale**`"), "<code>**letterale**</code>");
 assert.equal(render("# Titolo\n**forte** e *corsivo*"), "<h1>Titolo</h1><br><strong>forte</strong> e <em>corsivo</em>");
 assert.ok(render("| A | B |\n| --- | --- |\n| 1 | 2 |").includes("<table>"));
+const references = render(
+  'Consulta [1] e [documentazione][2].\n\n'
+  + '[1]: https://example.com/uno "Titolo uno"\n'
+  + '[2]: https://example.com/due',
+);
+assert.ok(references.includes('href="https://example.com/uno" title="Titolo uno"'));
+assert.ok(references.includes('href="https://example.com/due"'));
+assert.ok(references.includes(">1</a>") && references.includes(">documentazione</a>"));
+assert.ok(references.includes('[1]: <a class="markdown-link"'));
+assert.ok(references.includes(">https://example.com/uno</a> \"Titolo uno\""));
+assert.ok(references.includes("[2]: <a"));
+const inlineLink = render('[Leggi qui](https://example.com/docs?a=1&b=2 "Guida")');
+assert.ok(inlineLink.includes('href="https://example.com/docs?a=1&amp;b=2"'));
+assert.ok(inlineLink.includes('title="Guida"'));
+assert.ok(inlineLink.includes(">Leggi qui</a>"));
+assert.ok(!render("[link](javascript:alert%281%29)").includes("<a "));
+assert.ok(!render("`[1](https://example.com)`").includes("<a "));
+assert.ok(!render("```\n[1](https://example.com)\n```").includes("<a "));
 assert.ok(!render('<img src=x onerror="alert(1)">').includes("<img "));
 assert.ok(render('![x" onerror="alert(1)](https://e.test/x.png)').includes('alt="x&quot; onerror=&quot;alert(1)"'));
 assert.ok(render("@@MARKDOWN_FRAGMENT_0@@ ![X](https://e.test/x.png)").startsWith("@@MARKDOWN_FRAGMENT_0@@ "));
 assert.ok(render('![X](https://e.test/$&.png)').includes('src="https://e.test/$&amp;.png"'));
-console.log("Markdown immagini: verifiche superate");
+console.log("Markdown: immagini e link sicuri verificati");

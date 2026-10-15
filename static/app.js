@@ -11,6 +11,7 @@ const chatListEl = document.getElementById("chatList");
 const sidebar = document.getElementById("sidebar");
 const menuBtn = document.getElementById("menuBtn");
 const modelSelect = document.getElementById("modelSelect");
+const providerSelect = document.getElementById("providerSelect");
 const chatUsageEl = document.getElementById("chatUsage");
 const permissionModeSelects = document.querySelectorAll("[data-permission-mode]");
 const attachmentBtn = document.getElementById("attachmentBtn");
@@ -22,6 +23,9 @@ const chatNotice = document.getElementById("chatNotice");
 const mcpConfigList = document.getElementById("mcpConfigList");
 const skillsList = document.getElementById("skillsList");
 const slashSuggestions = document.getElementById("slashSuggestions");
+const notificationToggle = document.getElementById("notificationToggle");
+const notificationTest = document.getElementById("notificationTest");
+const notificationStatus = document.getElementById("notificationStatus");
 
 let currentChatId = null;
 let currentChatProvider = null;
@@ -42,7 +46,123 @@ const chatPlans = new Map();
 const chatModels = new Map();
 const chatProviders = new Map();
 const mobileLayout = window.matchMedia("(max-width: 700px)");
+const NOTIFICATIONS_STORAGE_KEY = "copilot-response-notifications";
+const notificationChatId = new URLSearchParams(window.location.search).get("chat");
+if (notificationChatId && /^[a-zA-Z0-9_-]{1,128}$/.test(notificationChatId)) {
+  sessionStorage.setItem("copilot-notification-chat", notificationChatId);
+}
 localStorage.removeItem("copilot-auto-model-responses");
+
+function updateNotificationSettings() {
+  const supported = "Notification" in window && "serviceWorker" in navigator
+    && window.isSecureContext;
+  const enabled = localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) === "enabled";
+  notificationToggle.disabled = !supported;
+  notificationTest.disabled = !supported || !enabled || Notification.permission !== "granted";
+  notificationToggle.textContent = enabled ? "Disattiva notifiche" : "Attiva notifiche";
+  if (!supported) {
+    notificationStatus.textContent = "Notifiche non supportate in questo browser o contesto.";
+  } else if (Notification.permission === "denied") {
+    notificationStatus.textContent = "Permesso negato: abilita le notifiche nelle impostazioni del browser.";
+  } else if (enabled && Notification.permission === "granted") {
+    notificationStatus.textContent = "Notifiche attive per le chat non visibili.";
+  } else if (Notification.permission === "granted") {
+    notificationStatus.textContent = "Permesso concesso: attiva le notifiche per riceverle.";
+  } else {
+    notificationStatus.textContent = "Le notifiche richiedono il permesso del browser.";
+  }
+}
+
+async function setNotificationsEnabled(enabled) {
+  if (enabled) {
+    if (!("Notification" in window) || !("serviceWorker" in navigator)
+      || !window.isSecureContext) {
+      updateNotificationSettings();
+      return;
+    }
+    const permission = Notification.permission === "default"
+      ? await Notification.requestPermission()
+      : Notification.permission;
+    if (permission !== "granted") {
+      localStorage.removeItem(NOTIFICATIONS_STORAGE_KEY);
+      updateNotificationSettings();
+      return;
+    }
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "enabled");
+  } else {
+    localStorage.removeItem(NOTIFICATIONS_STORAGE_KEY);
+  }
+  updateNotificationSettings();
+}
+
+notificationToggle.addEventListener("click", async () => {
+  notificationToggle.disabled = true;
+  try {
+    await setNotificationsEnabled(
+      localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) !== "enabled",
+    );
+  } catch (error) {
+    notificationStatus.textContent = `Impossibile aggiornare le notifiche: ${error.message}`;
+  } finally {
+    updateNotificationSettings();
+  }
+});
+updateNotificationSettings();
+
+async function sendTestNotification() {
+  const registration = await navigator.serviceWorker.ready;
+  await registration.showNotification("Notifica di prova", {
+    body: "Le notifiche di Copilot CLI Webchat funzionano.",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    tag: `notification-test-${Date.now()}`,
+    requireInteraction: false,
+  });
+}
+
+notificationTest.addEventListener("click", async () => {
+  notificationTest.disabled = true;
+  try {
+    await sendTestNotification();
+    notificationStatus.textContent = "Notifica di prova inviata.";
+  } catch (error) {
+    notificationStatus.textContent = `Impossibile inviare la notifica di prova: ${error.message}`;
+  } finally {
+    updateNotificationSettings();
+  }
+});
+
+async function notifyResponseReady(chatId, isPlan = false) {
+  const selectedChatId = currentChatId || pendingChatId;
+  const responseIsVisible = !document.hidden && settingsView.hidden
+    && selectedChatId === chatId;
+  if (responseIsVisible || !chatId
+    || localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) !== "enabled"
+    || !("Notification" in window) || Notification.permission !== "granted"
+    || !("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    await registration.showNotification(isPlan ? "Piano pronto" : "Risposta pronta", {
+      body: "Tocca per aprire la chat.",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      tag: `chat-response-${chatId}-${Date.now()}`,
+      renotify: false,
+      requireInteraction: false,
+      data: { chatId },
+    });
+  } catch (error) {
+    console.error("Invio notifica risposta non riuscito:", error);
+  }
+}
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type === "open-chat" && typeof event.data.chatId === "string") {
+      openChat(event.data.chatId, true);
+    }
+  });
+}
 
 function showNotice(message) {
   chatNotice.textContent = message;
@@ -394,6 +514,8 @@ function prepareNewChatPermissions() {
 
 function setProviderControls(provider) {
   const studio = provider === "studio";
+  providerSelect.value = provider;
+  permissionModeSelects.forEach((select) => { select.disabled = studio; });
   document.getElementById("modelSettings").hidden = studio;
   attachmentBtn.hidden = studio;
   if (studio) {
@@ -405,8 +527,9 @@ function setProviderControls(provider) {
 }
 
 function setModeSelection(provider, mode = "ask") {
-  const value = provider === "studio" ? "studio" : mode;
-  permissionModeSelects.forEach((select) => { select.value = value; });
+  permissionModeSelects.forEach((select) => {
+    select.value = provider === "studio" ? "ask" : mode;
+  });
 }
 
 async function createNewChat(provider, mode) {
@@ -421,11 +544,11 @@ async function createNewChat(provider, mode) {
     const data = await readApiResponse(res);
     if (!res.ok) {
       showNotice(data.error || "Impossibile creare una nuova chat");
-      const activeProvider = currentChatId ? chatProviders.get(currentChatId) || "cli" : "cli";
-      if (currentChatId) {
-        setModeSelection(activeProvider, lastPermissionMode);
-        setProviderControls(activeProvider);
-      }
+      const activeProvider = currentChatId
+        ? chatProviders.get(currentChatId) || "cli"
+        : pendingChatId ? pendingChatProvider : "cli";
+      setModeSelection(activeProvider, lastPermissionMode);
+      setProviderControls(activeProvider);
       return false;
     }
     if (!data.chat_id) {
@@ -455,11 +578,11 @@ async function createNewChat(provider, mode) {
     return true;
   } catch (error) {
     showNotice(error.message);
-    const activeProvider = currentChatId ? chatProviders.get(currentChatId) || "cli" : "cli";
-    if (currentChatId) {
-      setModeSelection(activeProvider, lastPermissionMode);
-      setProviderControls(activeProvider);
-    }
+    const activeProvider = currentChatId
+      ? chatProviders.get(currentChatId) || "cli"
+      : pendingChatId ? pendingChatProvider : "cli";
+    setModeSelection(activeProvider, lastPermissionMode);
+    setProviderControls(activeProvider);
     return false;
   }
 }
@@ -467,19 +590,10 @@ async function createNewChat(provider, mode) {
 permissionModeSelects.forEach((select) => {
   select.addEventListener("change", async () => {
     const mode = select.value;
-    const provider = mode === "studio" ? "studio" : "cli";
     const activeProvider = currentChatId
       ? chatProviders.get(currentChatId) || "cli"
-      : pendingChatId ? pendingChatProvider : provider;
-    if (!currentChatId && !pendingChatId && provider === "studio") {
-      await createNewChat(provider, "ask");
-      return;
-    }
-    if (provider !== activeProvider) {
-      await createNewChat(provider, mode === "studio" ? "ask" : mode);
-      return;
-    }
-    if (provider === "studio") return;
+      : pendingChatId ? pendingChatProvider : providerSelect.value;
+    if (activeProvider === "studio") return;
     if (mode === "plan") {
       showNotice("");
       return;
@@ -500,6 +614,18 @@ permissionModeSelects.forEach((select) => {
       }
     }
   });
+});
+
+providerSelect.addEventListener("change", async () => {
+  const provider = providerSelect.value;
+  const activeProvider = currentChatId
+    ? chatProviders.get(currentChatId) || "cli"
+    : pendingChatId ? pendingChatProvider : "cli";
+  if (provider === activeProvider) return;
+  const mode = activeProvider === "studio"
+    ? lastPermissionMode
+    : permissionModeSelects[0]?.value || lastPermissionMode;
+  await createNewChat(provider, provider === "studio" ? "ask" : mode);
 });
 
 async function jsonRequest(url, method, body) {
@@ -550,6 +676,18 @@ function imageUrl(source) {
   }
 }
 
+function markdownLinkUrl(source) {
+  try {
+    const url = new URL(
+      source.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"),
+    );
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    return escapeHtml(url.href).replace(/"/g, "&quot;");
+  } catch (_error) {
+    return null;
+  }
+}
+
 function renderMarkdown(text) {
   let html = escapeHtml(text);
   const fragments = [];
@@ -570,6 +708,47 @@ function renderMarkdown(text) {
     const href = escapeHtml(url).replace(/"/g, "&quot;");
     const label = alt.replace(/"/g, "&quot;");
     return protect(`<a class="message-image" href="${href}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"><img src="${href}" alt="${label}" loading="lazy" referrerpolicy="no-referrer"></a>`);
+  });
+  const references = new Map();
+  html = html.replace(
+    /^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*<?(https?:\/\/[^>\s]+)>?(?:[ \t]+(?:"([^"\n]*)"|'([^'\n]*)'))?[ \t]*$/gim,
+    (match, label, source, doubleQuotedTitle, singleQuotedTitle) => {
+      const href = markdownLinkUrl(source);
+      if (!href) return match;
+      references.set(label.trim().toLowerCase().replace(/\s+/g, " "), {
+        href,
+        title: doubleQuotedTitle ?? singleQuotedTitle,
+      });
+      const title = doubleQuotedTitle ?? singleQuotedTitle;
+      const titleText = title === undefined ? "" : ` "${title}"`;
+      return protect(
+        `[${label}]: <a class="markdown-link" href="${href}"${title === undefined ? "" : ` title="${title.replace(/"/g, "&quot;")}"`} target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${source}</a>${titleText}`,
+      );
+    },
+  );
+  const createLink = (label, reference) => {
+    const title = reference.title === undefined
+      ? ""
+      : ` title="${reference.title.replace(/"/g, "&quot;")}"`;
+    return protect(
+      `<a class="markdown-link" href="${reference.href}"${title} target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${label}</a>`,
+    );
+  };
+  html = html.replace(/\[([^\]\n]+)\]\[([^\]\n]*)\]/g, (match, label, referenceLabel) => {
+    const key = (referenceLabel || label).trim().toLowerCase().replace(/\s+/g, " ");
+    const reference = references.get(key);
+    return reference ? createLink(label, reference) : match;
+  });
+  html = html.replace(/\[([^\]\n]+)\]\(\s*(<?https?:\/\/[^\s)>]+>?)(?:\s+["']([^"']*)["'])?\s*\)/g,
+    (match, label, source, title) => {
+      const href = markdownLinkUrl(source.replace(/^<|>$/g, ""));
+      if (!href) return match;
+      return createLink(label, { href, title });
+    });
+  html = html.replace(/\[([^\]\n]+)\]/g, (match, label) => {
+    const key = label.trim().toLowerCase().replace(/\s+/g, " ");
+    const reference = references.get(key);
+    return reference ? createLink(label, reference) : match;
   });
   const lines = html.split("\n");
   const tableLines = [];
@@ -939,6 +1118,34 @@ attachmentDropzone.addEventListener("drop", (event) => {
 });
 
 function updateSlashSuggestions() {
+  const cursor = input.selectionStart;
+  const beforeCursor = input.value.slice(0, cursor);
+  const hashMatch = beforeCursor.match(/(?:^|\s)#([a-zA-Z][a-zA-Z0-9_-]{0,60})?$/);
+  if (hashMatch && canUseMcpMentions()) {
+    const query = hashMatch[1] || "";
+    const matches = mcpServers.filter((server) => server.enabled
+      && server.name.toLowerCase().startsWith(query.toLowerCase()));
+    slashSuggestions.replaceChildren();
+    matches.forEach((server) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = `#${server.name}`;
+      button.addEventListener("click", () => {
+        const tokenStart = beforeCursor.lastIndexOf("#");
+        const afterCursor = input.value.slice(cursor);
+        const separator = afterCursor.startsWith(" ") ? "" : " ";
+        input.value = `${input.value.slice(0, tokenStart)}#${server.name}${separator}${afterCursor}`;
+        const nextCursor = tokenStart + server.name.length + separator.length + 1;
+        input.setSelectionRange(nextCursor, nextCursor);
+        input.focus();
+        autoResize();
+        updateSlashSuggestions();
+      });
+      slashSuggestions.append(button);
+    });
+    slashSuggestions.hidden = matches.length === 0;
+    return;
+  }
   const value = input.value.trimStart();
   const commands = [
     "/help", "/usage", "/cwd ", "/model ",
@@ -964,6 +1171,14 @@ function updateSlashSuggestions() {
   slashSuggestions.hidden = matches.length === 0;
 }
 input.addEventListener("input", updateSlashSuggestions);
+
+function canUseMcpMentions() {
+  const provider = currentChatId
+    ? chatProviders.get(currentChatId) || "cli"
+    : pendingChatProvider;
+  return provider === "cli"
+    && ["edit", "agent"].includes(permissionModeSelects[0]?.value);
+}
 
 function chroniclePrompt(text) {
   const match = text.trim().match(/^\/chronicle\s+(\S+)(?:\s+([\s\S]*))?$/i);
@@ -1054,6 +1269,36 @@ function parseMcpConfig(text) {
   } catch (_error) {
     throw new Error("Configurazione MCP: JSON non valido");
   }
+  if (config?.type === "http") {
+    const allowedKeys = ["type", "url", "headers", "tools"];
+    let url;
+    try {
+      url = new URL(config.url);
+    } catch (_error) {
+      throw new Error("Config MCP HTTP: inserisci un URL valido");
+    }
+    const localHost = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (Object.keys(config).some((key) => !allowedKeys.includes(key))
+      || (url.protocol !== "https:" && !(url.protocol === "http:" && localHost))
+      || url.username || url.password || url.hash
+      || (config.headers !== undefined
+        && (!config.headers || typeof config.headers !== "object" || Array.isArray(config.headers)
+          || !Object.entries(config.headers).every(([key, value]) =>
+            /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$/.test(key)
+            && typeof value === "string" && value.length <= 2048 && !/[\r\n\0]/.test(value))))
+      || (config.tools !== undefined
+        && (!Array.isArray(config.tools) || config.tools.length > 100
+          || !config.tools.every((tool) => typeof tool === "string"
+            && tool.length > 0 && tool.length <= 256 && !/[\x00-\x1f]/.test(tool))))) {
+      throw new Error("Config MCP HTTP non valida: servono URL HTTPS, headers e tools validi");
+    }
+    return {
+      type: "http",
+      url: config.url,
+      headers: config.headers || {},
+      tools: config.tools || ["*"],
+    };
+  }
   if (!config || typeof config !== "object" || Array.isArray(config)
     || typeof config.command !== "string" || !config.command.startsWith("/")
     || !Array.isArray(config.args) || !config.args.every((arg) => typeof arg === "string")
@@ -1065,6 +1310,30 @@ function parseMcpConfig(text) {
   return config;
 }
 
+function selectedMcpServerIds() {
+  return mcpServers.filter((server) => server.enabled).map((server) => server.id);
+}
+
+function extractMcpMentions(text) {
+  const enabledServers = new Map(
+    mcpServers.filter((server) => server.enabled)
+      .map((server) => [server.name.toLowerCase(), server.id]),
+  );
+  const selected = new Set();
+  const message = text.replace(/(^|\s)#([a-zA-Z][a-zA-Z0-9_-]{0,60})(?=$|\s)/g,
+    (mention, prefix, name) => {
+      const serverId = enabledServers.get(name.toLowerCase());
+      if (!serverId) return mention;
+      selected.add(serverId);
+      return prefix;
+    }).replace(/[ \t]{2,}/g, " ").trim();
+  return {
+    message,
+    servers: selected.size ? [...selected] : selectedMcpServerIds(),
+    explicit: selected.size > 0,
+  };
+}
+
 async function loadMcpServers() {
   try {
     const res = await fetch("/api/mcp-servers");
@@ -1073,6 +1342,7 @@ async function loadMcpServers() {
     if (!res.ok) throw new Error(data.error || "Impossibile caricare i server MCP");
     mcpServers = data;
     renderMcpServers();
+    updateSlashSuggestions();
   } catch (err) {
     mcpConfigList.textContent = err.message;
   }
@@ -1334,6 +1604,9 @@ async function openChat(chatId, refresh = false) {
   if (request !== chatOpenRequest) return false;
   pendingChatId = null;
   currentChatId = chatId;
+  if (sessionStorage.getItem("copilot-notification-chat") === chatId) {
+    sessionStorage.removeItem("copilot-notification-chat");
+  }
   currentChatProvider = chatProviders.get(chatId) || "cli";
   sessionStorage.setItem("copilot-current-chat", chatId);
   setProviderControls(currentChatProvider);
@@ -1801,29 +2074,42 @@ async function submitChat(e) {
   let responseChatId = submittedChatId;
   const submittedModel = modelSelect.value;
   const submittedPermissions = selectedPermissions();
+  const activeProvider = currentChatId
+    ? chatProviders.get(currentChatId) || "cli"
+    : pendingChatProvider;
   const isSubmittedChatSelected = (chatId) => currentChatId === chatId
     || (!currentChatId && pendingChatId === chatId)
     || (submittedWithoutChat && !currentChatId && !pendingChatId);
   const submittedFiles = attachedFiles;
+  const mcpSelection = canUseMcpMentions()
+    ? extractMcpMentions(text)
+    : {
+      message: text,
+      servers: activeProvider === "studio" ? [] : selectedMcpServerIds(),
+      explicit: false,
+    };
+  const promptText = mcpSelection.message
+    || (mcpSelection.explicit
+      ? "Usa i server MCP selezionati per aiutarmi."
+      : "");
   const imageFiles = submittedFiles.filter((file) => file.type.startsWith("image/"));
   const prompt = imageFiles.length
-    ? `${text || "Analizza i file allegati."}\n🖼️`
-    : chroniclePrompt(text) || text;
+    ? `${promptText
+      ? `${promptText.replace(/\.$/, "")} e analizza i file allegati.`
+      : "Analizza i file allegati."}\n🖼️`
+    : chroniclePrompt(promptText) || promptText;
 
   busy = true;
   renderMcpServers();
   updateChatBusyState();
   const requestedPlan = permissionModeSelects[0]?.value === "plan";
-  const activeProvider = currentChatId
-    ? chatProviders.get(currentChatId) || "cli"
-    : pendingChatProvider;
   const isCommand = activeProvider !== "studio" && attachedFiles.length === 0
     && (/^\/(help|usage)\s*$/i.test(text) || /^\/cwd(?:\s+.+)?\s*$/i.test(text)
       || /^\/model\s+\S+\s*$/i.test(text)
       || /^\/chronicle(?:\s*)$/i.test(text) || /^\/chronicle\s+reindex(?:\s|$)/i.test(text)
       || /^\/chronicle\s+search\s*$/i.test(text)
       || (/^\/chronicle\b/i.test(text) && !chroniclePrompt(text)));
-  const displayText = text || (imageFiles.length ? "" : `[Allegati ${submittedFiles.length} file]`);
+  const displayText = promptText || (imageFiles.length ? "" : `[Allegati ${submittedFiles.length} file]`);
   addMessage(displayText, "user", null, new Date().toISOString(), null, submittedFiles);
   // Il testo è già stato acquisito per la richiesta; svuota il campo anche se
   // la risposta fallisce o lo streaming si interrompe.
@@ -1848,7 +2134,7 @@ async function submitChat(e) {
     formData.append("chat_id", submittedChatId || "");
     formData.append("model", submittedModel);
     formData.append("permissions", JSON.stringify(submittedPermissions));
-    formData.append("mcp_servers", "[]");
+    formData.append("mcp_servers", JSON.stringify(mcpSelection.servers));
     formData.append("tool_permissions", "[]");
     if (requestedPlan) formData.append("plan", "true");
     submittedFiles.forEach((file) => formData.append("files", file));
@@ -1904,6 +2190,7 @@ async function submitChat(e) {
         showNotice(`Risposta ricevuta, ma cronologia non aggiornata: ${err.message}`);
       }
     }
+    notifyResponseReady(data.chat_id, !!data.pending_plan);
     if (isSubmittedChatSelected(data.chat_id) && !historyRefreshFailed) {
       showNotice("");
     }
@@ -1970,7 +2257,7 @@ input.addEventListener("keydown", (e) => {
 newChatBtn.addEventListener("click", async () => {
   chatOpenRequest += 1;
   const mode = permissionModeSelects[0]?.value || "ask";
-  await createNewChat(mode === "studio" ? "studio" : "cli", mode);
+  await createNewChat(providerSelect.value, mode);
 });
 
 logoutBtn.addEventListener("click", async () => {
@@ -1994,7 +2281,8 @@ async function restoreChat() {
     persistActiveJobs();
     sessionStorage.removeItem("copilot-pending-job");
     await loadChatList();
-    const chatId = sessionStorage.getItem("copilot-current-chat")
+    const chatId = sessionStorage.getItem("copilot-notification-chat")
+      || sessionStorage.getItem("copilot-current-chat")
       || restoredJobs.find((job) => job.chat_id)?.chat_id;
     if (chatId) await openChat(chatId, true);
     else updateChatBusyState();
@@ -2009,6 +2297,7 @@ async function restorePendingJob(job) {
   renderJobProgress(job);
   try {
     const data = await waitForJob(job);
+    notifyResponseReady(data.chat_id, !!data.pending_plan);
     await loadChatList();
     if (currentChatId === data.chat_id && settingsView.hidden) {
       await openChat(data.chat_id, true);
