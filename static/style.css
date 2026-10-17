@@ -41,6 +41,69 @@ html, body {
   overflow: hidden;
   resize: horizontal;
 }
+.directory-picker {
+  width: min(560px, calc(100vw - 28px));
+  max-height: min(720px, calc(100dvh - 32px));
+  border: 1px solid #3a3f4f;
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--panel);
+  color: var(--text);
+}
+.directory-picker::backdrop { background: #000a; }
+.directory-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.directory-picker-header h2 { margin: 0; font-size: 20px; }
+.directory-picker button {
+  border: 1px solid #3a3f4f;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #303646;
+  color: var(--text);
+  cursor: pointer;
+}
+.directory-picker button:disabled { opacity: .5; cursor: not-allowed; }
+.directory-picker-current {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 13px;
+}
+.directory-picker-roots, .directory-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.directory-picker-parent { margin-bottom: 8px; }
+.directory-picker-list {
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  border: 1px solid #303646;
+  border-radius: 8px;
+}
+.directory-picker-folder {
+  display: block;
+  width: 100%;
+  border: 0 !important;
+  border-bottom: 1px solid #303646 !important;
+  border-radius: 0 !important;
+  text-align: left;
+}
+.directory-picker-folder:last-child { border-bottom: 0 !important; }
+.directory-picker-folder:hover, .directory-picker button:hover:not(:disabled) {
+  background: #3a4254;
+}
+.directory-picker-status {
+  min-height: 1.4em;
+  color: var(--muted);
+  font-size: 13px;
+}
+.directory-picker-actions { justify-content: flex-end; }
+.directory-picker-actions button:first-child { background: #235b91; }
 [hidden] { display: none !important; }
 .settings-view {
   flex: 1;

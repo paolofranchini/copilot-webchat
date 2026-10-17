@@ -35,6 +35,7 @@ node tests/test_markdown.js
 node tests/test_active_chat_progress.js
 node tests/test_chat_history.js
 node tests/test_chat_job_controls.js
+node tests/test_cwd_picker.js
 node tests/test_message_metadata.js
 node tests/test_new_chat_permissions.js
 node tests/test_tool_activity.js
@@ -61,19 +62,20 @@ non avviare/riavviare il servizio condiviso solo per modifiche documentali.
 
 | Test | Scenari critici coperti dal codice dei test |
 | --- | --- |
-| [test_active_chat_progress.js](../tests/test_active_chat_progress.js) | Il pending e i nomi dei tool vengono ricostruiti tornando a una chat attiva; lo stato della frase di attesa è conservato tra i cambi chat. |
-| [test_app.py](../tests/test_app.py) | Login/errori, chat occupata, modello, `/cwd` e validazione directory, eventi e import nativo senza sovrascrivere impostazioni, limite allegati. |
+| [test_active_chat_progress.js](../tests/test_active_chat_progress.js) | Il pending e i nomi dei tool vengono ricostruiti tornando a una chat attiva o adottando un job identificato dalla lista chat; lo stato della frase di attesa è conservato tra i cambi chat. |
+| [test_app.py](../tests/test_app.py) | Login/errori, chat occupata, modello, `/cwd` e selettore directory con radici/autenticazione/symlink, eventi e import nativo senza sovrascrivere impostazioni, limite allegati. |
 | [test_advanced.py](../tests/test_advanced.py) | CLI fittizia, SSE, piani, directory `/cwd` passata alla CLI, MCP `stdio` e HTTP Streamable/per-tool, Fleet rifiutata, skill, migrazione legacy, timeout/chiusura SSE. |
-| [test_async_chat.py](../tests/test_async_chat.py) | Job, recupero da altro client, idempotenza, chat occupata, esecuzioni parallele su chat distinte, stato running in sidebar API, permessi Agent al primo messaggio, progressi, approvazione asincrona, errori e PID non più attivo. |
+| [test_async_chat.py](../tests/test_async_chat.py) | Job, recupero da altro client, idempotenza, chat occupata, esecuzioni parallele su chat distinte, stato running e job ID in sidebar API, permessi Agent al primo messaggio, progressi, approvazione asincrona, errori e PID non più attivo. |
 | [test_chat_history.js](../tests/test_chat_history.js) | Render della cronologia completa, inclusi più messaggi dell'assistente per turno. |
 | [test_chat_job_controls.js](../tests/test_chat_job_controls.js), [test_new_chat_permissions.js](../tests/test_new_chat_permissions.js) | Il job disabilita solo i controlli della chat occupata; la nuova chat conserva i permessi Agent scelti per il primo messaggio. |
+| [test_cwd_picker.js](../tests/test_cwd_picker.js) | `/cwd` apre il selettore directory prima di inviare un messaggio e non lascia il pulsante nella sidebar. |
 | [test_images.py](../tests/test_images.py), [test_markdown.js](../tests/test_markdown.js) | Immagini autenticate, percorsi/symlink, formati vietati, cronologia; rendering/escaping di Markdown inline e link di riferimento HTTP(S). |
 | [test_pwa_tls.py](../tests/test_pwa_tls.py), [test_service_worker.js](../tests/test_service_worker.js) | Asset PWA pubblici, manifest e icone, download autenticato della sola CA, generazione/verifica TLS, worker network-only senza cache e apertura chat dalle notifiche (OpenSSL richiesto per test TLS). |
 | [test_directline_settings.py](../tests/test_directline_settings.py) | Salvataggio secret Direct Line cifrato solo su HTTPS, file privati, stato API senza segreti, input non valido, autenticazione e rimozione. |
 | [test_copilot_studio.py](../tests/test_copilot_studio.py), [test_new_chat_permissions.js](../tests/test_new_chat_permissions.js) | Chat Studio separata, invio/continuazione conversazione Direct Line mockati, cronologia/API e cambio provider senza alterare permessi CLI. |
 | [test_fcm_push.py](../tests/test_fcm_push.py) | API FCM autenticate/HTTPS, configurazione service account, token cifrati, richiesta OAuth e payload senza testo chat, trigger su completamento job. |
 | [test_message_usage.py](../tests/test_message_usage.py), [test_message_metadata.js](../tests/test_message_metadata.js) | Consumi sull'ultima risposta del turno, Auto nel DB, dati mancanti/zero, riga metadati e rotazione/arresto delle frasi di attesa. |
-| [test_tool_activity.js](../tests/test_tool_activity.js) | Estrae e mostra `toolName` degli eventi CLI senza esporre gli argomenti. |
+| [test_tool_activity.js](../tests/test_tool_activity.js) | Nome tool e dettaglio di massimo 50 caratteri Unicode, priorità della descrizione, spazi normalizzati e nessuna serializzazione indiscriminata degli argomenti. |
 | [test_session_names.py](../tests/test_session_names.py) | Rinomina YAML multilinea/caratteri speciali, preservazione metadati e cronologia. |
 | [test_service_restart.py](../tests/test_service_restart.py), [test_service_restart.js](../tests/test_service_restart.js) | Supervisione, blocchi job/lock, errori systemctl/timer, attesa nuova istanza e disconnessione frontend. |
 | [test_sidebar_swipe.js](../tests/test_sidebar_swipe.js) | Verifica swipe verso sinistra e tap esterno; lascia attivi sidebar, hamburger e layout desktop. |

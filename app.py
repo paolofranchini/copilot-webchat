@@ -1989,12 +1989,14 @@ def list_chats():
     native_chats = native_sessions()
     usage_by_session = read_cli_usage([chat["id"] for chat in native_chats])
     running_chat_ids = set()
+    running_job_ids = {}
     running_jobs = db.execute(
         "SELECT id, chat_id FROM chat_jobs WHERE status = 'running'"
     ).fetchall()
     for job in running_jobs:
         if refresh_job(job["id"])["status"] == "running":
             running_chat_ids.add(job["chat_id"])
+            running_job_ids[job["chat_id"]] = job["id"]
     chats = []
     for native_chat in native_chats:
         ensure_chat_import(db, native_chat)
@@ -2014,6 +2016,7 @@ def list_chats():
             "pending_plan": bool(row["pending_plan"]),
             "running": native_chat["id"] in running_chat_ids
                 or session_is_running(SESSION_STATE_DIR / native_chat["id"]),
+            "job_id": running_job_ids.get(native_chat["id"]),
             "mcp_servers": json.loads(row["mcp_servers"]),
             "tool_permissions": json.loads(row["tool_permissions"]),
             "provider": "cli",
@@ -2041,12 +2044,107 @@ def list_chats():
             "usage": None,
             "pending_plan": False,
             "running": studio_chat["id"] in running_chat_ids,
+            "job_id": running_job_ids.get(studio_chat["id"]),
             "mcp_servers": [],
             "tool_permissions": [],
         })
     db.commit()
     chats.sort(key=lambda chat: chat["last_message_at"], reverse=True)
     return jsonify(chats)
+
+
+@app.route("/api/directories", methods=["GET"])
+def browse_directories():
+    chat_id = request.args.get("chat_id") or session.get("copilot_session_id")
+    if chat_id is not None and (
+        not valid_session_id(chat_id)
+        or chat_id != session.get("copilot_session_id")
+    ):
+        return jsonify({"error": "chat non valida o non selezionata"}), 400
+
+    roots = []
+    candidates = [("Home", Path.home()), ("Directory server", Path.cwd())]
+    if chat_id:
+        row = get_db().execute(
+            "SELECT working_directory FROM chats WHERE id = ?", (chat_id,)
+        ).fetchone()
+        metadata_cwd = (
+            read_session_metadata(SESSION_STATE_DIR / chat_id).get("cwd")
+            if (SESSION_STATE_DIR / chat_id).is_dir() else None
+        )
+        chat_directory = (
+            row["working_directory"] if row and row["working_directory"]
+            else metadata_cwd or str(Path.cwd())
+        )
+        candidates.append(("Directory chat", Path(chat_directory).expanduser()))
+
+    seen_roots = set()
+    for label, candidate in candidates:
+        try:
+            root = candidate.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root.is_dir() and root not in seen_roots:
+            roots.append({"label": label, "path": str(root)})
+            seen_roots.add(root)
+
+    if not roots:
+        return jsonify({"error": "nessuna directory disponibile"}), 503
+
+    requested_path = request.args.get("path")
+    if requested_path is None:
+        current = next(
+            (Path(root["path"]) for root in roots if root["label"] == "Directory chat"),
+            Path(roots[0]["path"]),
+        )
+    else:
+        if not requested_path or len(requested_path) > 4096 or "\x00" in requested_path:
+            return jsonify({"error": "directory non valida"}), 400
+        try:
+            current = Path(requested_path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return jsonify({"error": "directory non trovata o non accessibile"}), 404
+        if not current.is_dir():
+            return jsonify({"error": "il percorso indicato non e' una directory"}), 400
+        if not any(current.is_relative_to(Path(root["path"])) for root in roots):
+            return jsonify({"error": "directory fuori dalle radici disponibili"}), 403
+
+    parent = current.parent
+    parent_path = (
+        str(parent)
+        if parent != current
+        and any(parent.is_relative_to(Path(root["path"])) for root in roots)
+        else None
+    )
+    try:
+        directories = []
+        for child in current.iterdir():
+            try:
+                resolved_child = child.resolve(strict=True)
+                if (
+                    resolved_child.is_dir()
+                    and any(
+                        resolved_child.is_relative_to(Path(root["path"]))
+                        for root in roots
+                    )
+                ):
+                    directories.append({
+                        "name": child.name,
+                        "path": str(resolved_child),
+                    })
+            except (OSError, RuntimeError, ValueError):
+                continue
+    except OSError:
+        return jsonify({"error": "directory non accessibile"}), 403
+    directories.sort(key=lambda item: (item["name"].casefold(), item["name"]))
+    response = jsonify({
+        "current": str(current),
+        "parent": parent_path,
+        "roots": roots,
+        "directories": directories,
+    })
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @app.route("/api/chats/<chat_id>", methods=["GET"])

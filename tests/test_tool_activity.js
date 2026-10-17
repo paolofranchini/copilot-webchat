@@ -28,7 +28,7 @@ context.showActivity({ append: (activity) => appended.push(activity) }, {
     arguments: { path: "/private/project/file.txt" },
   },
 });
-assert.equal(appended[0].textContent, "Uso view");
+assert.equal(appended[0].textContent, "Uso view — Read file");
 assert.equal(appended[0].className, "tool-activity");
 
 context.showActivity({ append: (activity) => appended.push(activity) }, {
@@ -36,4 +36,25 @@ context.showActivity({ append: (activity) => appended.push(activity) }, {
 });
 assert.equal(appended[1].textContent, "Uso legacy-tool");
 
-console.log("Uso tool: nome CLI visualizzato senza esporre gli argomenti");
+const label = context.toolActivityName({
+  data: { toolName: "shell", arguments: { description: "a".repeat(51) } },
+});
+assert.equal(label, `shell — ${"a".repeat(49)}…`);
+assert.equal(Array.from(label.split(" — ")[1]).length, 50);
+assert.equal(context.toolActivityName({
+  data: { toolName: "view", arguments: { path: "/progetto/app.py" } },
+}), "view — /progetto/app.py");
+assert.equal(context.toolActivityName({
+  data: {
+    toolName: "shell",
+    arguments: { description: "Controllo\n  sintassi", command: "node --check app.js" },
+  },
+}), "shell — Controllo sintassi");
+assert.equal(context.toolActivityName({
+  data: { toolName: "shell", arguments: { token: "non mostrare" } },
+}), "shell");
+assert.equal(context.toolActivityName({
+  data: { toolName: "view", arguments: { description: "😀".repeat(51) } },
+}), `view — ${"😀".repeat(49)}…`);
+
+console.log("Uso tool: dettaglio di massimo 50 caratteri, senza serializzare tutti gli argomenti");

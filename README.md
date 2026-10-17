@@ -44,6 +44,7 @@ delle sessioni e risultati associati alla chat d'origine, senza duplicare invii.
   La rinomina sostituisce anche i nomi multilinea e codifica i caratteri speciali nel file YAML, mantenendo la sessione leggibile dalla CLI.
 - **Continuità di contesto**: ogni conversazione richiama `copilot --resume` sullo stesso `session-id`, così Copilot ricorda lo storico dei messaggi precedenti.
 - **Risposte in streaming**: testo e attività dei tool vengono recuperati durante l'elaborazione; anche l'approvazione dei piani è asincrona. Mentre Copilot lavora puoi consultare le impostazioni o altre chat e inviare nuovi messaggi in sessioni diverse; la chat in esecuzione è evidenziata in verde nella sidebar e il risultato resta associato alla sessione d'origine. Il flusso resta attivo se cambi app o ricarichi la pagina e non reinvia il prompt.
+- **Dettagli attività**: accanto a «Uso [tool]» compare un dettaglio di massimo 50 caratteri (inclusi i puntini di troncamento), usando la descrizione o il titolo dell'azione oppure, in loro assenza, percorso, comando, ricerca o URL. Non viene mostrato l'intero oggetto degli argomenti; l'anteprima può comunque contenere dati presenti nel percorso o comando.
 - **Risposte asincrone**: dopo l'invio Copilot lavora sul server, anche se cambi app, spegni lo schermo o ricarichi la pagina. Al ritorno nella stessa tab la risposta viene recuperata automaticamente; una perdita di connessione mostra un avviso neutro, non un errore rosso, e non reinvia il prompt. Gli errori effettivi di Copilot restano segnalati.
 - **Modello per chat**: l'elenco del selettore viene caricato dalla CLI a ogni apertura della webapp, senza una lista di modelli mantenuta nel frontend. Su una chat aperta la scelta equivale a `/model <modello>` e vale per i turni successivi; per una chat nuova viene usata come modello iniziale.
 - **Crediti per sessione**: il totale AIU viene letto dal database nativo di Copilot CLI e mostrato nell'area di composizione della chat.
@@ -106,9 +107,12 @@ impostazioni delle chat sono salvate nel database.
   Il selettore applica `/model <modello>` alla chat aperta. Le API backend per i
   permessi granulari accettano pattern come `shell(git status)` o
   `url(github.com)`; la UI attuale non offre un editor per questi pattern.
-  `/cwd` mostra la directory corrente della chat e `/cwd <directory>` la cambia
-  per i turni successivi; la scelta è salvata per chat e i percorsi relativi
-  partono dalla directory corrente. Serve una chat creata o selezionata.
+  `/cwd <directory>` cambia la directory della chat per i turni successivi; la
+  scelta è salvata per chat e i percorsi relativi partono dalla directory
+  corrente. Inviare `/cwd` senza percorso apre un selettore visuale di cartelle
+  del server; puoi sfogliare Home, la directory del servizio e quella della
+  chat. I collegamenti simbolici che escono da queste radici non vengono
+  mostrati. Serve una chat GitHub Copilot attiva, selezionata o nuova.
   `/chronicle standup`, `tips`, `cost-tips`, `search <termine>` e `improve`
   inviano alla CLI prompt dedicati basati sulla cronologia delle sessioni; `improve`
   propone modifiche alle istruzioni senza cambiare file. `/chronicle` mostra i

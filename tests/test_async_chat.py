@@ -137,15 +137,19 @@ class AsyncChatTests(unittest.TestCase):
         self.assertNotEqual(first_chat, returned_chat)
 
         running = {}
+        running_job_ids = {}
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             chats = self.client.get("/api/chats").json
             running = {chat["id"]: chat["running"] for chat in chats}
+            running_job_ids = {chat["id"]: chat["job_id"] for chat in chats}
             if running.get(first_chat) and running.get(second_chat_id):
                 break
             time.sleep(0.02)
         self.assertTrue(running.get(first_chat))
         self.assertTrue(running.get(second_chat_id))
+        self.assertEqual(running_job_ids[first_chat], first_id)
+        self.assertEqual(running_job_ids[second_chat_id], second_id)
 
         self.assertEqual(self.wait(first_id)["status"], "done")
         self.assertEqual(self.wait(second_id)["status"], "done")

@@ -68,12 +68,21 @@ const context = vm.createContext({
   },
 });
 const source = fs.readFileSync(path.join(__dirname, "../static/app.js"), "utf8");
+const thinkingStart = source.indexOf("function setThinkingMessage(");
+const thinkingEnd = source.indexOf("\nfunction addMessage(", thinkingStart);
+vm.runInContext(source.slice(thinkingStart, thinkingEnd), context);
 const start = source.indexOf("function toolActivityName(");
 const end = source.indexOf("async function streamChat(", start);
 vm.runInContext(source.slice(start, end), context);
 const rememberStart = source.indexOf("function persistActiveJobs(");
 const rememberEnd = source.indexOf("\nfunction clearJob(", rememberStart);
 vm.runInContext(source.slice(rememberStart, rememberEnd), context);
+const restoreStart = source.indexOf("async function restorePendingJob(");
+const restoreEnd = source.indexOf("\nrestoreChat();", restoreStart);
+vm.runInContext(source.slice(restoreStart, restoreEnd), context);
+const adoptStart = source.indexOf("function adoptRunningJob(");
+const adoptEnd = source.indexOf("\nasync function loadChatList(", adoptStart);
+vm.runInContext(source.slice(adoptStart, adoptEnd), context);
 
 const job = {
   id: "job-a",
@@ -117,4 +126,23 @@ assert.equal(pending.classList.contains("thinking"), true);
 assert.equal(pending.querySelector(".thinking-dots").children.length, 3);
 assert.deepEqual(activity.children.map((entry) => entry.textContent), ["Uso read", "Uso grep"]);
 
-console.log("Progressi chat: spinner e attività ripristinati dopo il cambio chat");
+messagesEl.replaceChildren();
+context.currentChatId = "chat-c";
+context.waitForJob = () => new Promise(() => {});
+context.adoptRunningJob({ id: "chat-c", job_id: "job-c" });
+const adoptedJob = context.activeJobs.get("job-c");
+assert.equal(adoptedJob.chat_id, "chat-c");
+assert.equal(adoptedJob.accepted, true);
+pending = messagesEl.querySelector('[data-job-pending="job-c"]');
+activity = messagesEl.querySelector('[data-job-activity="job-c"]');
+assert.equal(pending.classList.contains("thinking"), true);
+assert.equal(pending.querySelector(".thinking-dots").children.length, 3);
+assert.deepEqual(activity.children, []);
+
+adoptedJob.progress.tools = ["shell — npm test"];
+context.renderJobProgress(adoptedJob);
+assert.deepEqual(activity.children.map((entry) => entry.textContent), ["Uso shell — npm test"]);
+context.adoptRunningJob({ id: "chat-c", job_id: "job-c" });
+assert.equal([...context.activeJobs.values()].filter((job) => job.chat_id === "chat-c").length, 1);
+
+console.log("Progressi chat: cambio chat e adozione di job attivi ripristinano spinner e tool");

@@ -134,6 +134,22 @@
     </div>
   </div>
 
+  <dialog id="directoryPicker" class="directory-picker" aria-labelledby="directoryPickerTitle">
+    <form method="dialog" class="directory-picker-header">
+      <h2 id="directoryPickerTitle">Scegli progetto</h2>
+      <button type="submit" aria-label="Chiudi">×</button>
+    </form>
+    <p id="directoryPickerCurrent" class="directory-picker-current"></p>
+    <div id="directoryPickerRoots" class="directory-picker-roots" aria-label="Posizioni rapide"></div>
+    <button id="directoryPickerParent" class="directory-picker-parent" type="button">↑ Cartella superiore</button>
+    <div id="directoryPickerList" class="directory-picker-list" aria-label="Sottocartelle"></div>
+    <p id="directoryPickerStatus" role="status" aria-live="polite"></p>
+    <div class="directory-picker-actions">
+      <button id="directoryPickerSelect" type="button">Usa questa directory</button>
+      <button id="directoryPickerCancel" type="button">Annulla</button>
+    </div>
+  </dialog>
+
   <script src="/pwa.js"></script>
   <script src="/app.js"></script>
 </body>

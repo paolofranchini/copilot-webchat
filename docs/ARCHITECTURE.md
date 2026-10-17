@@ -34,8 +34,15 @@ dopo aggiornamenti.
 
 `webchat.db` conserva impostazioni in `chats`, configurazioni `mcp_servers`,
 progressi/risultati testuali in `chat_jobs` e marker `auto_model_responses`.
+`GET /api/chats` espone `job_id` dei lavori in corso: aprendo una chat attiva
+senza lavoro locale (altra scheda, sessione ricaricata) il frontend lo adotta e
+ripristina spinner e attività.
 Il marker Auto resta nel DB per essere disponibile tra browser, non nel
 localStorage. `working_directory` viene impostata da `/cwd` e passata con `-C`.
+Il comando `/cwd` senza argomenti apre il selettore progetti, che usa
+`GET /api/directories` per sfogliare solo directory entro Home, directory del
+servizio o directory della chat selezionata; la selezione riusa `/api/command`
+con `/cwd <percorso>`.
 Solo le chat Studio hanno cronologia in `studio_messages` e token di conversazione
 cifrati; non si convertono chat o cronologie tra provider. Il selettore Provider
 sceglie GitHub Copilot (predefinito) o Copilot Studio e un cambio provider avvia

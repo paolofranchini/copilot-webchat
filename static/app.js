@@ -5,6 +5,14 @@ const sendBtn = document.getElementById("sendBtn");
 const newChatBtn = document.getElementById("newChatBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsView = document.getElementById("settingsView");
+const directoryPicker = document.getElementById("directoryPicker");
+const directoryPickerCurrent = document.getElementById("directoryPickerCurrent");
+const directoryPickerRoots = document.getElementById("directoryPickerRoots");
+const directoryPickerParent = document.getElementById("directoryPickerParent");
+const directoryPickerList = document.getElementById("directoryPickerList");
+const directoryPickerStatus = document.getElementById("directoryPickerStatus");
+const directoryPickerSelect = document.getElementById("directoryPickerSelect");
+const directoryPickerCancel = document.getElementById("directoryPickerCancel");
 const chatView = document.getElementById("chatView");
 const logoutBtn = document.getElementById("logoutBtn");
 const chatListEl = document.getElementById("chatList");
@@ -643,6 +651,100 @@ async function jsonRequest(url, method, body) {
   return data;
 }
 
+async function loadDirectoryPicker(path = null) {
+  const chatId = currentChatId || pendingChatId;
+  if (!chatId) {
+    directoryPickerStatus.textContent = "Crea o seleziona una chat prima di scegliere il progetto.";
+    directoryPickerList.replaceChildren();
+    directoryPickerRoots.replaceChildren();
+    directoryPickerParent.disabled = true;
+    directoryPickerSelect.disabled = true;
+    return;
+  }
+
+  directoryPickerStatus.textContent = "Caricamento cartelle…";
+  directoryPickerSelect.disabled = true;
+  const params = new URLSearchParams({ chat_id: chatId });
+  if (path) params.set("path", path);
+  try {
+    const response = await fetch(`/api/directories?${params}`, { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.href = "/login.html";
+      return;
+    }
+    const data = await readApiResponse(response);
+    if (!response.ok) throw new Error(data.error || `Errore HTTP ${response.status}`);
+
+    directoryPicker.dataset.currentPath = data.current;
+    directoryPickerCurrent.textContent = data.current;
+    directoryPickerParent.disabled = !data.parent;
+    directoryPickerParent.onclick = () => loadDirectoryPicker(data.parent);
+    directoryPickerSelect.disabled = false;
+    directoryPickerList.replaceChildren();
+    directoryPickerRoots.replaceChildren();
+    for (const root of data.roots) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = root.label;
+      button.title = root.path;
+      button.addEventListener("click", () => loadDirectoryPicker(root.path));
+      directoryPickerRoots.append(button);
+    }
+    for (const directory of data.directories) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "directory-picker-folder";
+      button.textContent = `📁 ${directory.name}`;
+      button.title = directory.path;
+      button.addEventListener("click", () => loadDirectoryPicker(directory.path));
+      directoryPickerList.append(button);
+    }
+    directoryPickerStatus.textContent = data.directories.length
+      ? `${data.directories.length} sottocartelle`
+      : "Nessuna sottocartella";
+  } catch (error) {
+    directoryPickerList.replaceChildren();
+    directoryPickerStatus.textContent = error.message;
+  }
+}
+
+async function openDirectoryPicker() {
+  const provider = currentChatId
+    ? currentChatProvider
+    : pendingChatId ? pendingChatProvider : providerSelect.value;
+  if (!currentChatId && !pendingChatId) {
+    showNotice("Crea o seleziona una chat prima di scegliere il progetto.");
+    return;
+  }
+  if (provider === "studio") {
+    showNotice("La selezione della directory è disponibile solo per le chat GitHub Copilot.");
+    return;
+  }
+  directoryPicker.showModal();
+  await loadDirectoryPicker();
+}
+
+directoryPickerSelect.addEventListener("click", async () => {
+  const chatId = currentChatId || pendingChatId;
+  const directory = directoryPicker.dataset.currentPath;
+  if (!chatId || !directory) return;
+  directoryPickerSelect.disabled = true;
+  try {
+    const result = await jsonRequest("/api/command", "POST", {
+      command: `/cwd ${directory}`,
+      chat_id: chatId,
+    });
+    directoryPicker.close();
+    showNotice(`Progetto impostato: ${result.cwd}`);
+  } catch (error) {
+    directoryPickerStatus.textContent = error.message;
+  } finally {
+    directoryPickerSelect.disabled = false;
+  }
+});
+
+directoryPickerCancel.addEventListener("click", () => directoryPicker.close());
+
 function escapeHtml(text) {
   return text
     .replace(/&/g, "&amp;")
@@ -1148,7 +1250,7 @@ function updateSlashSuggestions() {
   }
   const value = input.value.trimStart();
   const commands = [
-    "/help", "/usage", "/cwd ", "/model ",
+    "/help", "/usage", "/cwd", "/model ",
     "/chronicle standup", "/chronicle tips", "/chronicle cost-tips",
     "/chronicle search ", "/chronicle improve",
   ];
@@ -1171,6 +1273,10 @@ function updateSlashSuggestions() {
   slashSuggestions.hidden = matches.length === 0;
 }
 input.addEventListener("input", updateSlashSuggestions);
+
+function isDirectoryPickerCommand(text) {
+  return /^\/cwd\s*$/i.test(text);
+}
 
 function canUseMcpMentions() {
   const provider = currentChatId
@@ -1489,6 +1595,16 @@ skillAddForm.addEventListener("submit", async (event) => {
   }
 });
 
+function adoptRunningJob(chat) {
+  if (!chat?.job_id || activeJobs.has(chat.job_id)
+    || [...activeJobs.values()].some((job) => job.chat_id === chat.id)) return;
+  const job = {
+    id: chat.job_id, chat_id: chat.id, accepted: true, progress: { content: "", tools: [] },
+  };
+  rememberJob(job);
+  restorePendingJob(job);
+}
+
 async function loadChatList() {
   const res = await fetch("/api/chats");
   if (res.status === 401) { window.location.href = "/login.html"; return; }
@@ -1503,6 +1619,7 @@ async function loadChatList() {
   }
   for (const chat of chats) chatUsages.set(chat.id, chat.usage);
   renderChatUsage();
+  adoptRunningJob(chats.find((chat) => chat.id === currentChatId));
   chatListEl.innerHTML = "";
   for (const c of chats) {
     chatPermissions.set(c.id, c.permissions || []);
@@ -1656,6 +1773,7 @@ async function refreshChatMessages(chatId) {
   if (!Array.isArray(data)) throw new Error("Formato cronologia non valido");
   if (currentChatId !== chatId) return false;
   renderChatMessages(data, chatPlans.get(chatId) || false);
+  renderActiveJobProgress(chatId);
   return true;
 }
 
@@ -1715,7 +1833,17 @@ function showActivity(container, event) {
 function toolActivityName(event) {
   const data = event?.data || {};
   const name = data.toolName || data.tool_name || data.name || data.tool || data.command || "tool";
-  return String(name);
+  const args = data.arguments || {};
+  const detail = [
+    args.description, data.description, data.toolTitle,
+    args.path, args.file_path, args.command, args.pattern, args.url,
+  ].find((value) => typeof value === "string" && value.trim());
+  if (!detail) return String(name);
+  const characters = Array.from(detail.replace(/\s+/g, " ").trim());
+  const preview = characters.length > 50
+    ? `${characters.slice(0, 49).join("")}…`
+    : characters.join("");
+  return `${name} — ${preview}`;
 }
 
 function showActivityName(container, name) {
@@ -2044,7 +2172,7 @@ async function sendCommand(text) {
     return true;
   }
   const command = text.match(/^\/(help|usage)(?:\s*)$/i)
-    || text.match(/^\/cwd(?:\s+.+)?\s*$/i)
+    || text.match(/^\/cwd\s+.+$/i)
     || text.match(/^\/model\s+(\S+)\s*$/i);
   if (!command) return false;
   const data = await jsonRequest("/api/command", "POST", {
@@ -2069,6 +2197,10 @@ async function submitChat(e) {
   }
   const text = input.value.trim();
   if (!text && attachedFiles.length === 0) return;
+  if (isDirectoryPickerCommand(text) && attachedFiles.length === 0) {
+    await openDirectoryPicker();
+    return;
+  }
   const submittedChatId = currentChatId || pendingChatId;
   const submittedWithoutChat = !submittedChatId;
   let responseChatId = submittedChatId;
@@ -2104,7 +2236,7 @@ async function submitChat(e) {
   updateChatBusyState();
   const requestedPlan = permissionModeSelects[0]?.value === "plan";
   const isCommand = activeProvider !== "studio" && attachedFiles.length === 0
-    && (/^\/(help|usage)\s*$/i.test(text) || /^\/cwd(?:\s+.+)?\s*$/i.test(text)
+    && (/^\/(help|usage)\s*$/i.test(text) || /^\/cwd\s+.+$/i.test(text)
       || /^\/model\s+\S+\s*$/i.test(text)
       || /^\/chronicle(?:\s*)$/i.test(text) || /^\/chronicle\s+reindex(?:\s|$)/i.test(text)
       || /^\/chronicle\s+search\s*$/i.test(text)
